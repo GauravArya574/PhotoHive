@@ -200,7 +200,7 @@ export function scoreLayout(
 
   sizeDistributionScore = Math.max(0, Math.min(1, sizeDistributionScore - singlePhotoDominancePenalty));
 
-  // 3. Canvas Coverage Score (0 to 1) - optimized for 97% to 100%
+  // 3. Canvas Coverage Score (0 to 1) - optimized for coverage
   const coveredArea = placements.reduce((sum, p) => {
     const cellW = settings.spacing > 0 ? p.width + settings.spacing : p.width;
     const cellH = settings.spacing > 0 ? p.height + settings.spacing : p.height;
@@ -208,9 +208,9 @@ export function scoreLayout(
   }, 0);
   const coverage = Math.min(1, Math.max(0, coveredArea / canvasArea));
 
-  // Severe penalty if coverage is below 97%
+  // Severe penalty if coverage is below 97% (except balanced_mosaic which preserves native ratios without cropping)
   let lowCoveragePenalty = 0;
-  if (coverage < 0.97) {
+  if (settings.mode !== 'balanced_mosaic' && coverage < 0.97) {
     lowCoveragePenalty = Math.pow((0.97 - coverage) * 100, 1.4) * 3.5;
   }
 

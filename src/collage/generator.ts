@@ -9,7 +9,6 @@ import {
   buildGridLayout,
   layoutNodeToPlacements,
   getNodeAspectRatio,
-  enforceUniformScaleBounds,
 } from './packing';
 
 /**
@@ -142,52 +141,38 @@ export async function generateCollageLayout(
         break;
       }
       case 'balanced_mosaic': {
-        if (settings.sizeVariation === 'low') {
-          // Scale factor 0.70x-1.30x is the absolute first priority in uniform mode.
-          // Build tree with target area constraints to guarantee both scale bounds and coverage.
-          const tree = buildPhotoHiveTree(photos, targetAspect, rng, settings);
-          candidatePlacements = layoutNodeToPlacements(
-            tree,
-            0,
-            0,
-            canvasWidth,
-            canvasHeight,
-            settings.spacing
-          );
+        const tree = buildBalancedMosaicTree(photos, targetAspect, rng, settings);
+        const treeAspect = getNodeAspectRatio(tree);
+
+        let placeW: number;
+        let placeH: number;
+        let startX: number;
+        let startY: number;
+
+        if (treeAspect >= targetAspect) {
+          // Tree is wider than canvas ratio -> fit width, center vertically
+          placeW = canvasWidth;
+          placeH = Math.max(1, Math.round(canvasWidth / treeAspect));
+          startX = 0;
+          startY = Math.max(0, Math.round((canvasHeight - placeH) / 2));
         } else {
-          const tree = buildBalancedMosaicTree(photos, targetAspect, rng, settings);
-          const treeAspect = getNodeAspectRatio(tree);
-
-          let placeW: number;
-          let placeH: number;
-          let startX: number;
-          let startY: number;
-
-          if (treeAspect >= targetAspect) {
-            // Tree is wider than canvas ratio -> fit width, center vertically
-            placeW = canvasWidth;
-            placeH = Math.max(1, Math.round(canvasWidth / treeAspect));
-            startX = 0;
-            startY = Math.max(0, Math.round((canvasHeight - placeH) / 2));
-          } else {
-            // Tree is taller than canvas ratio -> fit height, center horizontally
-            placeH = canvasHeight;
-            placeW = Math.max(1, Math.round(canvasHeight * treeAspect));
-            startX = Math.max(0, Math.round((canvasWidth - placeW) / 2));
-            startY = 0;
-          }
-
-          candidatePlacements = layoutNodeToPlacements(
-            tree,
-            startX,
-            startY,
-            placeW,
-            placeH,
-            settings.spacing,
-            [],
-            true // forceAspectRatio = true (never stretch, never crop)
-          );
+          // Tree is taller than canvas ratio -> fit height, center horizontally
+          placeH = canvasHeight;
+          placeW = Math.max(1, Math.round(canvasHeight * treeAspect));
+          startX = Math.max(0, Math.round((canvasWidth - placeW) / 2));
+          startY = 0;
         }
+
+        candidatePlacements = layoutNodeToPlacements(
+          tree,
+          startX,
+          startY,
+          placeW,
+          placeH,
+          settings.spacing,
+          [],
+          true // forceAspectRatio = true (preserves native aspect ratios with zero cropping and zero gaps)
+        );
         break;
       }
       case 'justified': {
@@ -222,26 +207,15 @@ export async function generateCollageLayout(
       }
     }
 
-    // In uniform mode, strictly enforce 0.70x–1.30x scale factor bounds
-    if (settings.sizeVariation === 'low') {
-      candidatePlacements = enforceUniformScaleBounds(
-        candidatePlacements,
-        canvasWidth,
-        canvasHeight,
-        settings.spacing
-      );
-    }
-
     // Aesthetic evaluation
     const scoreObj = scoreLayout(candidatePlacements, canvasWidth, canvasHeight, settings);
 
     // Prioritize candidates:
-    // Priority 1: Scale factor strictly within [0.70x, 1.30x] in uniform mode
-    // Priority 2: High coverage (>= 97%)
-    // Priority 3: Aesthetic totalScore
+    // For balanced_mosaic: optimize for canvas coverage first, then aesthetic balance
+    // For other modes in uniform mode: verify scale factor bounds [0.70x, 1.30x], coverage, then score
     const targetArea = (canvasWidth * canvasHeight) / count;
     let candidateViolatesBounds = false;
-    if (settings.sizeVariation === 'low') {
+    if (settings.sizeVariation === 'low' && settings.mode !== 'balanced_mosaic') {
       for (const p of candidatePlacements) {
         const r = (p.width * p.height) / targetArea;
         if (r < 0.6999 || r > 1.3001) {
@@ -255,7 +229,7 @@ export async function generateCollageLayout(
     const isHighCoverage = candidateCoverage >= 0.97;
     const bestIsHighCoverage = bestScoreObj.coverage >= 0.97;
     let bestViolatesBounds = false;
-    if (settings.sizeVariation === 'low' && bestPlacements.length > 0) {
+    if (settings.sizeVariation === 'low' && settings.mode !== 'balanced_mosaic' && bestPlacements.length > 0) {
       for (const p of bestPlacements) {
         const r = (p.width * p.height) / targetArea;
         if (r < 0.6999 || r > 1.3001) {
@@ -268,6 +242,16 @@ export async function generateCollageLayout(
     let isBetter = false;
     if (c === 0) {
       isBetter = true;
+    } else if (settings.mode === 'balanced_mosaic') {
+      // For balanced mosaic: optimize for canvas coverage first, then totalScore
+      const covDiff = candidateCoverage - bestScoreObj.coverage;
+      if (covDiff > 0.015) {
+        isBetter = true;
+      } else if (covDiff < -0.015) {
+        isBetter = false;
+      } else {
+        isBetter = scoreObj.totalScore > bestScore;
+      }
     } else if (bestViolatesBounds && !candidateViolatesBounds) {
       isBetter = true;
     } else if (!bestViolatesBounds && candidateViolatesBounds) {
@@ -297,15 +281,6 @@ export async function generateCollageLayout(
         await new Promise(r => setTimeout(r, 0));
       }
     }
-  }
-
-  if (settings.sizeVariation === 'low') {
-    bestPlacements = enforceUniformScaleBounds(
-      bestPlacements,
-      canvasWidth,
-      canvasHeight,
-      settings.spacing
-    );
   }
 
   const sanityCheck = performSanityChecks(

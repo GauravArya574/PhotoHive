@@ -208,66 +208,6 @@ export function getUniformMultipliers(
   return mults;
 }
 
-/**
- * Strict enforcement of scale factor bounds [0.70x, 1.30x] for uniform mode.
- * First priority: No placement may have area < 0.70x or > 1.30x target area.
- * Second priority: Optimizes canvas coverage and keeps elements within bounds.
- */
-export function enforceUniformScaleBounds(
-  placements: Placement[],
-  canvasWidth: number,
-  canvasHeight: number,
-  spacing: number = 0
-): Placement[] {
-  const count = placements.length;
-  if (count === 0) return placements;
-
-  const targetArea = (canvasWidth * canvasHeight) / count;
-  const minAllowedArea = 0.70 * targetArea;
-  const maxAllowedArea = 1.30 * targetArea;
-
-  for (const p of placements) {
-    let area = p.width * p.height;
-
-    // Hard ceiling: scale factor must not exceed 1.30x
-    if (area > maxAllowedArea) {
-      const k = Math.sqrt(maxAllowedArea / area);
-      let newW = Math.max(1, Math.floor(p.width * k));
-      let newH = Math.max(1, Math.floor(p.height * k));
-      while (newW * newH > maxAllowedArea && (newW > 1 || newH > 1)) {
-        if (newW >= newH && newW > 1) newW--;
-        else if (newH > 1) newH--;
-        else break;
-      }
-      const dx = Math.round((p.width - newW) / 2);
-      const dy = Math.round((p.height - newH) / 2);
-      p.x = Math.max(0, Math.min(canvasWidth - newW, p.x + dx));
-      p.y = Math.max(0, Math.min(canvasHeight - newH, p.y + dy));
-      p.width = newW;
-      p.height = newH;
-    } else if (area < minAllowedArea) {
-      // Hard floor: scale factor must not fall below 0.70x
-      const k = Math.sqrt(minAllowedArea / area);
-      let newW = Math.min(canvasWidth, Math.ceil(p.width * k));
-      let newH = Math.min(canvasHeight, Math.ceil(p.height * k));
-      while (newW * newH < minAllowedArea && (p.x + newW < canvasWidth || p.y + newH < canvasHeight)) {
-        if (newW <= newH && p.x + newW < canvasWidth) newW++;
-        else if (p.y + newH < canvasHeight) newH++;
-        else break;
-      }
-      if (p.x + newW > canvasWidth) {
-        p.x = Math.max(0, canvasWidth - newW);
-      }
-      if (p.y + newH > canvasHeight) {
-        p.y = Math.max(0, canvasHeight - newH);
-      }
-      p.width = Math.min(canvasWidth, newW);
-      p.height = Math.min(canvasHeight, newH);
-    }
-  }
-
-  return placements;
-}
 
 /**
  * Builds an organic, irregular PhotoHive tree layout.
@@ -636,7 +576,10 @@ export function buildBalancedMosaicTree(
       const arH = ar1 + ar2;
       const arV = 1 / (1 / ar1 + 1 / ar2);
 
-      const isH = Math.abs(Math.log(arH / desiredAspect)) <= Math.abs(Math.log(arV / desiredAspect));
+      const diffH = Math.abs(Math.log(arH / desiredAspect));
+      const diffV = Math.abs(Math.log(arV / desiredAspect));
+
+      const isH = diffH <= diffV;
       return {
         type: isH ? 'horizontal' : 'vertical',
         children: [
@@ -647,27 +590,29 @@ export function buildBalancedMosaicTree(
     }
 
     let bestNode: LayoutNode | null = null;
-    let bestDiff = Infinity;
+    let bestCost = Infinity;
 
     // Split options based on sizeVariation
-    const splitOptions =
-      settings.sizeVariation === 'low'
-        ? [Math.floor(items.length / 2)]
-        : settings.sizeVariation === 'medium'
-        ? [Math.floor(items.length / 2), Math.floor(items.length * 0.45), Math.floor(items.length * 0.55)]
-        : [
-            Math.floor(items.length / 2),
-            Math.floor(items.length * 0.35),
-            Math.floor(items.length * 0.65),
-          ];
+    const half = Math.floor(items.length / 2);
+    let splitOptions: number[];
+    if (settings.sizeVariation === 'low') {
+      splitOptions = items.length % 2 === 0 ? [half] : [half, half + 1];
+      if (items.length === 4) splitOptions.push(1, 3);
+    } else if (settings.sizeVariation === 'medium') {
+      splitOptions = [half, Math.floor(items.length * 0.45), Math.floor(items.length * 0.55)];
+    } else {
+      splitOptions = [half, Math.floor(items.length * 0.35), Math.floor(items.length * 0.65)];
+    }
 
     const uniqueSplits = Array.from(new Set(splitOptions.filter(s => s > 0 && s < items.length)));
 
     for (const split of uniqueSplits) {
       const g1 = items.slice(0, split);
       const g2 = items.slice(split);
-      const f1 = g1.length / items.length;
-      const f2 = g2.length / items.length;
+      const c1 = g1.length;
+      const c2 = g2.length;
+      const f1 = c1 / items.length;
+      const f2 = c2 / items.length;
 
       for (const tryH of [true, false]) {
         const next1 = tryH ? desiredAspect * f1 : desiredAspect / f1;
@@ -677,10 +622,18 @@ export function buildBalancedMosaicTree(
         const ar1 = getNodeAspectRatio(n1);
         const ar2 = getNodeAspectRatio(n2);
         const combAspect = tryH ? ar1 + ar2 : 1 / (1 / Math.max(0.01, ar1) + 1 / Math.max(0.01, ar2));
-        const diff = Math.abs(Math.log(combAspect / desiredAspect));
+        const aspectDiff = Math.abs(Math.log(combAspect / desiredAspect));
 
-        if (diff < bestDiff) {
-          bestDiff = diff;
+        let cost = aspectDiff;
+        if (settings.sizeVariation === 'low') {
+          // Photo area ratio between n1 and n2
+          const areaRatio = tryH ? (ar1 / c1) / (ar2 / c2) : (ar2 / c1) / (ar1 / c2);
+          const areaDev = Math.abs(Math.log(areaRatio));
+          cost = aspectDiff * 1.0 + areaDev * 2.2;
+        }
+
+        if (cost < bestCost) {
+          bestCost = cost;
           bestNode = {
             type: tryH ? 'horizontal' : 'vertical',
             children: [n1, n2],
@@ -697,8 +650,59 @@ export function buildBalancedMosaicTree(
     );
   }
 
-  const shuffled = rng.shuffle(photos);
-  return recurse(shuffled, targetAspect);
+  // Explore candidate orderings to optimize canvas coverage and size balance
+  const numOrderings = settings.sizeVariation === 'low' ? 10 : 4;
+  let bestRoot: LayoutNode | null = null;
+  let bestRootScore = Infinity;
+
+  const orderings: Photo[][] = [rng.shuffle(photos)];
+  const sorted = [...photos].sort((a, b) => b.aspectRatio - a.aspectRatio);
+  orderings.push(sorted);
+
+  // Alternating high and low aspect ratios
+  const alt: Photo[] = [];
+  let l = 0;
+  let r = sorted.length - 1;
+  while (l <= r) {
+    if (l === r) alt.push(sorted[l]);
+    else { alt.push(sorted[l]); alt.push(sorted[r]); }
+    l++;
+    r--;
+  }
+  orderings.push(alt);
+
+  while (orderings.length < numOrderings) {
+    orderings.push(rng.shuffle(photos));
+  }
+
+  for (const ord of orderings) {
+    const root = recurse(ord, targetAspect);
+    const ar = getNodeAspectRatio(root);
+    const cov = ar >= targetAspect ? targetAspect / ar : ar / targetAspect;
+
+    let score = (1 - cov); // Higher coverage is lower score
+    if (settings.sizeVariation === 'low') {
+      const placements = layoutNodeToPlacements(root, 0, 0, 1000, Math.round(1000 / ar), 0, [], true);
+      const avgA = placements.reduce((s, p) => s + p.width * p.height, 0) / photos.length;
+      let minR = Infinity;
+      let maxR = -Infinity;
+      for (const p of placements) {
+        const ratio = (p.width * p.height) / avgA;
+        if (ratio < minR) minR = ratio;
+        if (ratio > maxR) maxR = ratio;
+      }
+      const penaltyMin = minR < 0.70 ? Math.pow((0.70 - minR) / 0.70, 2) * 4 : 0;
+      const penaltyMax = maxR > 1.30 ? Math.pow((maxR - 1.30) / 1.30, 2) * 4 : 0;
+      score += penaltyMin + penaltyMax;
+    }
+
+    if (score < bestRootScore) {
+      bestRootScore = score;
+      bestRoot = root;
+    }
+  }
+
+  return bestRoot || recurse(photos, targetAspect);
 }
 
 /**
