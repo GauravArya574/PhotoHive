@@ -51,40 +51,19 @@ export function renderPreview({
 
     const rx = Math.round(p.x * scaleX);
     const ry = Math.round(p.y * scaleY);
-    const rw = Math.round(p.width * scaleX);
-    const rh = Math.round(p.height * scaleY);
+    const rx2 = Math.round((p.x + p.width) * scaleX);
+    const ry2 = Math.round((p.y + p.height) * scaleY);
+    const rw = Math.max(1, rx2 - rx);
+    const rh = Math.max(1, ry2 - ry);
 
     if (rw <= 0 || rh <= 0) continue;
 
     const img = photo.image;
     if (img && (img as HTMLImageElement).complete !== false) {
       try {
-        const photoAspect =
-          photo.aspectRatio ||
-          ((img as HTMLImageElement).naturalWidth && (img as HTMLImageElement).naturalHeight
-            ? (img as HTMLImageElement).naturalWidth / (img as HTMLImageElement).naturalHeight
-            : rw / rh);
-        const cellAspect = rw / rh;
-
-        // If aspect ratios match closely (within 1.5%), draw to fill cell
-        if (Math.abs(photoAspect - cellAspect) / photoAspect < 0.015) {
-          ctx.drawImage(img, rx, ry, rw, rh);
-        } else {
-          // Never stretch and never crop: aspect-fit ("contain") centered within cell
-          let dw = rw;
-          let dh = rh;
-          let dx = rx;
-          let dy = ry;
-
-          if (photoAspect > cellAspect) {
-            dh = Math.max(1, Math.round(rw / photoAspect));
-            dy = Math.round(ry + (rh - dh) / 2);
-          } else {
-            dw = Math.max(1, Math.round(rh * photoAspect));
-            dx = Math.round(rx + (rw - dw) / 2);
-          }
-          ctx.drawImage(img, dx, dy, dw, dh);
-        }
+        const imgEl = img as HTMLImageElement;
+        // Draw the full original image directly with zero crop and zero distortion
+        ctx.drawImage(imgEl, rx, ry, rw, rh);
       } catch (e) {
         // Fallback color fill if image drawing failed
         ctx.fillStyle = photo.averageColor || '#333';

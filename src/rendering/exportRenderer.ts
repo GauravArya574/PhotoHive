@@ -87,30 +87,8 @@ export async function exportHighResCollage({
 
     try {
       const img = await ensureImageReady(photo);
-      const photoAspect =
-        photo.aspectRatio ||
-        (img.naturalWidth && img.naturalHeight ? img.naturalWidth / img.naturalHeight : p.width / p.height);
-      const cellAspect = p.width / p.height;
-
-      // If aspect ratios match closely (within 1.5%), draw directly to fill cell
-      if (Math.abs(photoAspect - cellAspect) / photoAspect < 0.015) {
-        ctx.drawImage(img, p.x, p.y, p.width, p.height);
-      } else {
-        // Never stretch and never crop: aspect-fit ("contain") centered within cell
-        let dw = p.width;
-        let dh = p.height;
-        let dx = p.x;
-        let dy = p.y;
-
-        if (photoAspect > cellAspect) {
-          dh = Math.max(1, Math.round(p.width / photoAspect));
-          dy = Math.round(p.y + (p.height - dh) / 2);
-        } else {
-          dw = Math.max(1, Math.round(p.height * photoAspect));
-          dx = Math.round(p.x + (p.width - dw) / 2);
-        }
-        ctx.drawImage(img, dx, dy, dw, dh);
-      }
+      // Draw the full original image directly with zero crop and zero distortion
+      ctx.drawImage(img, p.x, p.y, p.width, p.height);
     } catch (err) {
       // Fallback: draw placeholder color block
       ctx.fillStyle = photo.averageColor || '#444';

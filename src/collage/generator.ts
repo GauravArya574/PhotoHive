@@ -128,20 +128,12 @@ export async function generateCollageLayout(
     let candidatePlacements: Placement[] = [];
 
     switch (settings.mode) {
-      case 'photohive': {
-        const tree = buildPhotoHiveTree(photos, targetAspect, rng, settings);
-        candidatePlacements = layoutNodeToPlacements(
-          tree,
-          0,
-          0,
-          canvasWidth,
-          canvasHeight,
-          settings.spacing
-        );
-        break;
-      }
+      case 'photohive':
       case 'balanced_mosaic': {
-        const tree = buildBalancedMosaicTree(photos, targetAspect, rng, settings);
+        const tree = settings.mode === 'photohive'
+          ? buildPhotoHiveTree(photos, targetAspect, rng, settings)
+          : buildBalancedMosaicTree(photos, targetAspect, rng, settings);
+
         const treeAspect = getNodeAspectRatio(tree);
 
         let placeW: number;
@@ -150,13 +142,11 @@ export async function generateCollageLayout(
         let startY: number;
 
         if (treeAspect >= targetAspect) {
-          // Tree is wider than canvas ratio -> fit width, center vertically
           placeW = canvasWidth;
           placeH = Math.max(1, Math.round(canvasWidth / treeAspect));
           startX = 0;
           startY = Math.max(0, Math.round((canvasHeight - placeH) / 2));
         } else {
-          // Tree is taller than canvas ratio -> fit height, center horizontally
           placeH = canvasHeight;
           placeW = Math.max(1, Math.round(canvasHeight * treeAspect));
           startX = Math.max(0, Math.round((canvasWidth - placeW) / 2));
@@ -171,7 +161,7 @@ export async function generateCollageLayout(
           placeH,
           settings.spacing,
           [],
-          true // forceAspectRatio = true (preserves native aspect ratios with zero cropping and zero gaps)
+          true
         );
         break;
       }
@@ -211,16 +201,20 @@ export async function generateCollageLayout(
     const scoreObj = scoreLayout(candidatePlacements, canvasWidth, canvasHeight, settings);
 
     // Prioritize candidates:
-    // For balanced_mosaic: optimize for canvas coverage first, then aesthetic balance
-    // For other modes in uniform mode: verify scale factor bounds [0.70x, 1.30x], coverage, then score
-    const targetArea = (canvasWidth * canvasHeight) / count;
+    // In uniform mode: verify scale factor bounds [0.70x, 1.30x] relative to average photo area, coverage, then score
+    let candidateBoundPenalty = 0;
     let candidateViolatesBounds = false;
-    if (settings.sizeVariation === 'low' && settings.mode !== 'balanced_mosaic') {
+    if (settings.sizeVariation === 'low' && candidatePlacements.length > 0) {
+      const totalCandArea = candidatePlacements.reduce((s, p) => s + p.width * p.height, 0);
+      const candAvgArea = totalCandArea / count;
       for (const p of candidatePlacements) {
-        const r = (p.width * p.height) / targetArea;
-        if (r < 0.6999 || r > 1.3001) {
+        const r = (p.width * p.height) / candAvgArea;
+        if (r < 0.6999) {
           candidateViolatesBounds = true;
-          break;
+          candidateBoundPenalty += (0.70 - r) * 100;
+        } else if (r > 1.3001) {
+          candidateViolatesBounds = true;
+          candidateBoundPenalty += (r - 1.30) * 100;
         }
       }
     }
@@ -228,13 +222,20 @@ export async function generateCollageLayout(
     const candidateCoverage = scoreObj.coverage;
     const isHighCoverage = candidateCoverage >= 0.97;
     const bestIsHighCoverage = bestScoreObj.coverage >= 0.97;
+
+    let bestBoundPenalty = 0;
     let bestViolatesBounds = false;
-    if (settings.sizeVariation === 'low' && settings.mode !== 'balanced_mosaic' && bestPlacements.length > 0) {
+    if (settings.sizeVariation === 'low' && bestPlacements.length > 0) {
+      const totalBestArea = bestPlacements.reduce((s, p) => s + p.width * p.height, 0);
+      const bestAvgArea = totalBestArea / count;
       for (const p of bestPlacements) {
-        const r = (p.width * p.height) / targetArea;
-        if (r < 0.6999 || r > 1.3001) {
+        const r = (p.width * p.height) / bestAvgArea;
+        if (r < 0.6999) {
           bestViolatesBounds = true;
-          break;
+          bestBoundPenalty += (0.70 - r) * 100;
+        } else if (r > 1.3001) {
+          bestViolatesBounds = true;
+          bestBoundPenalty += (r - 1.30) * 100;
         }
       }
     }
@@ -242,8 +243,21 @@ export async function generateCollageLayout(
     let isBetter = false;
     if (c === 0) {
       isBetter = true;
+    } else if (settings.sizeVariation === 'low') {
+      // In uniform mode: strict penalty for breaking [0.70x, 1.30x], then coverage, then score
+      if (candidateBoundPenalty < bestBoundPenalty - 0.01) {
+        isBetter = true;
+      } else if (candidateBoundPenalty > bestBoundPenalty + 0.01) {
+        isBetter = false;
+      } else if (candidateCoverage > bestScoreObj.coverage + 0.02) {
+        isBetter = true;
+      } else if (candidateCoverage < bestScoreObj.coverage - 0.02) {
+        isBetter = false;
+      } else {
+        isBetter = scoreObj.totalScore > bestScore;
+      }
     } else if (settings.mode === 'balanced_mosaic') {
-      // For balanced mosaic: optimize for canvas coverage first, then totalScore
+      // For balanced mosaic in medium/high: optimize for canvas coverage first, then totalScore
       const covDiff = candidateCoverage - bestScoreObj.coverage;
       if (covDiff > 0.015) {
         isBetter = true;

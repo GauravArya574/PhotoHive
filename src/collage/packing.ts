@@ -562,6 +562,84 @@ export function buildBalancedMosaicTree(
     return { type: 'leaf', photo: photos[0] };
   }
 
+  if (settings.sizeVariation === 'low') {
+    const N = photos.length;
+    const canvasArea = settings.canvasWidth * settings.canvasHeight;
+    const targetAvgArea = canvasArea / N;
+    const mults = getUniformMultipliers(N, rng, settings.randomness);
+    const photoTargetAreas = new Map<string, number>();
+    const shuffled = rng.shuffle(photos);
+    for (let i = 0; i < N; i++) {
+      photoTargetAreas.set(shuffled[i].id, targetAvgArea * mults[i]);
+    }
+
+    function recurseUniform(items: Photo[], boxAspect: number, boxArea: number): LayoutNode {
+      if (items.length === 1) {
+        const p = items[0];
+        return {
+          type: 'leaf',
+          photo: p,
+          targetArea: photoTargetAreas.get(p.id) || boxArea,
+        };
+      }
+
+      if (items.length === 2) {
+        const p1 = items[0];
+        const p2 = items[1];
+        const a1 = photoTargetAreas.get(p1.id) || boxArea / 2;
+        const a2 = photoTargetAreas.get(p2.id) || boxArea / 2;
+        const tot = a1 + a2;
+        const f1 = a1 / tot;
+        const f2 = a2 / tot;
+
+        const leaf1: LayoutNode = { type: 'leaf', photo: p1, targetArea: a1 };
+        const leaf2: LayoutNode = { type: 'leaf', photo: p2, targetArea: a2 };
+
+        const hDistort =
+          Math.abs(boxAspect * f1 - p1.aspectRatio) / p1.aspectRatio +
+          Math.abs(boxAspect * f2 - p2.aspectRatio) / p2.aspectRatio;
+        const vDistort =
+          Math.abs(boxAspect / f1 - p1.aspectRatio) / p1.aspectRatio +
+          Math.abs(boxAspect / f2 - p2.aspectRatio) / p2.aspectRatio;
+
+        const isH = hDistort <= vDistort;
+        return {
+          type: isH ? 'horizontal' : 'vertical',
+          targetArea: tot,
+          children: [leaf1, leaf2],
+        };
+      }
+
+      const half = Math.floor(items.length / 2);
+      const g1 = items.slice(0, half);
+      const g2 = items.slice(half);
+
+      const a1 = g1.reduce((s, p) => s + (photoTargetAreas.get(p.id) || 0), 0);
+      const a2 = g2.reduce((s, p) => s + (photoTargetAreas.get(p.id) || 0), 0);
+      const tot = a1 + a2;
+
+      const f1 = a1 / tot;
+      const f2 = a2 / tot;
+
+      const preferH = boxAspect >= 1.0;
+      const splitType = preferH ? 'horizontal' : 'vertical';
+
+      const next1 = splitType === 'horizontal' ? boxAspect * f1 : boxAspect / f1;
+      const next2 = splitType === 'horizontal' ? boxAspect * f2 : boxAspect / f2;
+
+      const n1 = recurseUniform(g1, next1, a1);
+      const n2 = recurseUniform(g2, next2, a2);
+
+      return {
+        type: splitType,
+        targetArea: tot,
+        children: [n1, n2],
+      };
+    }
+
+    return recurseUniform(shuffled, targetAspect, canvasArea);
+  }
+
   function recurse(items: Photo[], desiredAspect: number): LayoutNode {
     if (items.length <= 1) {
       return { type: 'leaf', photo: items[0] };
@@ -594,25 +672,18 @@ export function buildBalancedMosaicTree(
 
     // Split options based on sizeVariation
     const half = Math.floor(items.length / 2);
-    let splitOptions: number[];
-    if (settings.sizeVariation === 'low') {
-      splitOptions = items.length % 2 === 0 ? [half] : [half, half + 1];
-      if (items.length === 4) splitOptions.push(1, 3);
-    } else if (settings.sizeVariation === 'medium') {
-      splitOptions = [half, Math.floor(items.length * 0.45), Math.floor(items.length * 0.55)];
-    } else {
-      splitOptions = [half, Math.floor(items.length * 0.35), Math.floor(items.length * 0.65)];
-    }
+    const splitOptions =
+      settings.sizeVariation === 'medium'
+        ? [half, Math.floor(items.length * 0.45), Math.floor(items.length * 0.55)]
+        : [half, Math.floor(items.length * 0.35), Math.floor(items.length * 0.65)];
 
     const uniqueSplits = Array.from(new Set(splitOptions.filter(s => s > 0 && s < items.length)));
 
     for (const split of uniqueSplits) {
       const g1 = items.slice(0, split);
       const g2 = items.slice(split);
-      const c1 = g1.length;
-      const c2 = g2.length;
-      const f1 = c1 / items.length;
-      const f2 = c2 / items.length;
+      const f1 = g1.length / items.length;
+      const f2 = g2.length / items.length;
 
       for (const tryH of [true, false]) {
         const next1 = tryH ? desiredAspect * f1 : desiredAspect / f1;
@@ -624,16 +695,8 @@ export function buildBalancedMosaicTree(
         const combAspect = tryH ? ar1 + ar2 : 1 / (1 / Math.max(0.01, ar1) + 1 / Math.max(0.01, ar2));
         const aspectDiff = Math.abs(Math.log(combAspect / desiredAspect));
 
-        let cost = aspectDiff;
-        if (settings.sizeVariation === 'low') {
-          // Photo area ratio between n1 and n2
-          const areaRatio = tryH ? (ar1 / c1) / (ar2 / c2) : (ar2 / c1) / (ar1 / c2);
-          const areaDev = Math.abs(Math.log(areaRatio));
-          cost = aspectDiff * 1.0 + areaDev * 2.2;
-        }
-
-        if (cost < bestCost) {
-          bestCost = cost;
+        if (aspectDiff < bestCost) {
+          bestCost = aspectDiff;
           bestNode = {
             type: tryH ? 'horizontal' : 'vertical',
             children: [n1, n2],
@@ -650,26 +713,14 @@ export function buildBalancedMosaicTree(
     );
   }
 
-  // Explore candidate orderings to optimize canvas coverage and size balance
-  const numOrderings = settings.sizeVariation === 'low' ? 10 : 4;
+  // Explore candidate orderings to optimize canvas coverage
+  const numOrderings = 6;
   let bestRoot: LayoutNode | null = null;
   let bestRootScore = Infinity;
 
   const orderings: Photo[][] = [rng.shuffle(photos)];
   const sorted = [...photos].sort((a, b) => b.aspectRatio - a.aspectRatio);
   orderings.push(sorted);
-
-  // Alternating high and low aspect ratios
-  const alt: Photo[] = [];
-  let l = 0;
-  let r = sorted.length - 1;
-  while (l <= r) {
-    if (l === r) alt.push(sorted[l]);
-    else { alt.push(sorted[l]); alt.push(sorted[r]); }
-    l++;
-    r--;
-  }
-  orderings.push(alt);
 
   while (orderings.length < numOrderings) {
     orderings.push(rng.shuffle(photos));
@@ -679,22 +730,7 @@ export function buildBalancedMosaicTree(
     const root = recurse(ord, targetAspect);
     const ar = getNodeAspectRatio(root);
     const cov = ar >= targetAspect ? targetAspect / ar : ar / targetAspect;
-
-    let score = (1 - cov); // Higher coverage is lower score
-    if (settings.sizeVariation === 'low') {
-      const placements = layoutNodeToPlacements(root, 0, 0, 1000, Math.round(1000 / ar), 0, [], true);
-      const avgA = placements.reduce((s, p) => s + p.width * p.height, 0) / photos.length;
-      let minR = Infinity;
-      let maxR = -Infinity;
-      for (const p of placements) {
-        const ratio = (p.width * p.height) / avgA;
-        if (ratio < minR) minR = ratio;
-        if (ratio > maxR) maxR = ratio;
-      }
-      const penaltyMin = minR < 0.70 ? Math.pow((0.70 - minR) / 0.70, 2) * 4 : 0;
-      const penaltyMax = maxR > 1.30 ? Math.pow((maxR - 1.30) / 1.30, 2) * 4 : 0;
-      score += penaltyMin + penaltyMax;
-    }
+    const score = 1 - cov;
 
     if (score < bestRootScore) {
       bestRootScore = score;
@@ -707,7 +743,7 @@ export function buildBalancedMosaicTree(
 
 /**
  * Organic Justified Rows Layout:
- * Arranges photos into justified rows with target row heights.
+ * Arranges photos into justified rows with exact photo aspect ratios, zero crop, zero stretch, and zero gaps.
  */
 export function buildJustifiedLayout(
   photos: Photo[],
@@ -721,127 +757,115 @@ export function buildJustifiedLayout(
   if (N === 0) return placements;
 
   const shuffled = rng.shuffle(photos);
+  const targetRowCount = Math.max(1, Math.min(N, Math.round(Math.sqrt(N * (canvasHeight / canvasWidth)))));
+
+  let rows: Photo[][] = [];
 
   if (settings.sizeVariation === 'low') {
-    // UNIFORM MODE: range strictly 0.70 - 1.30 * target area
-    const mults = getUniformMultipliers(N, rng, settings.randomness);
-    const targetAvgArea = (canvasWidth * canvasHeight) / N;
-    const photoItems = shuffled.map((p, i) => ({ photo: p, area: targetAvgArea * mults[i] }));
+    // UNIFORM MODE: Balance aspect sums so row heights & photo areas are tightly uniform
+    const sorted = [...shuffled].sort((a, b) => b.aspectRatio - a.aspectRatio);
+    rows = Array.from({ length: targetRowCount }, () => []);
 
-    const targetRowCount = Math.max(1, Math.round(Math.sqrt(N * (canvasHeight / canvasWidth))));
-    const rows: { photo: Photo; area: number }[][] = Array(targetRowCount).fill(0).map(() => []);
-
-    for (let i = 0; i < N; i++) {
-      rows[i % targetRowCount].push(photoItems[i]);
-    }
-
-    const rowAreas = rows.map(r => r.reduce((sum, item) => sum + item.area, 0));
-    const totalRowArea = rowAreas.reduce((sum, a) => sum + a, 0);
-
-    let curY = 0;
-    for (let rIdx = 0; rIdx < rows.length; rIdx++) {
-      const row = rows[rIdx];
-      const rArea = rowAreas[rIdx];
-      const rowH = (rIdx === rows.length - 1)
-        ? Math.max(1, canvasHeight - curY)
-        : Math.max(1, Math.round(canvasHeight * (rArea / totalRowArea)));
-
-      let curX = 0;
-      for (let cIdx = 0; cIdx < row.length; cIdx++) {
-        const item = row[cIdx];
-        const photoW = (cIdx === row.length - 1)
-          ? Math.max(1, canvasWidth - curX)
-          : Math.max(1, Math.round(canvasWidth * (item.area / rArea)));
-
-        const pad = settings.spacing > 0 ? settings.spacing / 2 : 0;
-        placements.push({
-          photoId: item.photo.id,
-          x: Math.round(curX + pad),
-          y: Math.round(curY + pad),
-          width: Math.max(1, Math.round(photoW - settings.spacing)),
-          height: Math.max(1, Math.round(rowH - settings.spacing)),
-          aspectRatio: item.photo.aspectRatio,
-        });
-        curX += photoW;
+    for (const p of sorted) {
+      let minRow = 0;
+      let minSum = rows[0].reduce((s, x) => s + x.aspectRatio, 0);
+      for (let r = 1; r < targetRowCount; r++) {
+        const s = rows[r].reduce((acc, x) => acc + x.aspectRatio, 0);
+        if (s < minSum) {
+          minSum = s;
+          minRow = r;
+        }
       }
-      curY += rowH;
+      rows[minRow].push(p);
     }
-    return placements;
-  }
+  } else {
+    // BALANCED / DYNAMIC MODE
+    const baseRowHeight = canvasHeight / targetRowCount;
+    const targetRowAspect = canvasWidth / baseRowHeight;
+    const varianceRange = settings.sizeVariation === 'medium' ? [0.90, 1.15] : [0.75, 1.30];
 
-  // Balanced / Dynamic mode
-  const targetRowCount = Math.max(2, Math.round(Math.sqrt(N * (canvasHeight / canvasWidth))));
-  const baseRowHeight = canvasHeight / targetRowCount;
+    let currentRow: Photo[] = [];
+    let currentAspectSum = 0;
 
-  const rows: Photo[][] = [];
-  let currentRow: Photo[] = [];
-  let currentAspectSum = 0;
-  const targetRowAspect = canvasWidth / baseRowHeight;
+    for (const p of shuffled) {
+      currentRow.push(p);
+      currentAspectSum += p.aspectRatio;
 
-  const varianceRange = settings.sizeVariation === 'medium' ? [0.90, 1.15] : [0.75, 1.30];
-
-  for (const p of shuffled) {
-    currentRow.push(p);
-    currentAspectSum += p.aspectRatio;
-
-    const variance = rng.nextFloat(varianceRange[0], varianceRange[1]);
-    if (currentAspectSum >= targetRowAspect * variance && currentRow.length >= 2) {
-      rows.push(currentRow);
-      currentRow = [];
-      currentAspectSum = 0;
-    }
-  }
-
-  if (currentRow.length > 0) {
-    if (rows.length > 0 && currentRow.length === 1) {
-      rows[rows.length - 1].push(currentRow[0]);
-    } else {
-      rows.push(currentRow);
-    }
-  }
-
-  // Calculate row heights so they stack to exactly canvasHeight
-  const rowNaturalAspects = rows.map(r => r.reduce((sum, p) => sum + p.aspectRatio, 0));
-  const totalInvAspect = rowNaturalAspects.reduce((sum, ar) => sum + (ar > 0 ? 1 / ar : 1), 0);
-
-  let curY = 0;
-  for (let rIdx = 0; rIdx < rows.length; rIdx++) {
-    const row = rows[rIdx];
-    const rowAspect = rowNaturalAspects[rIdx];
-    let rowH: number;
-
-    if (rIdx === rows.length - 1) {
-      rowH = Math.max(1, canvasHeight - curY);
-    } else {
-      const fraction = (1 / rowAspect) / totalInvAspect;
-      rowH = Math.max(1, Math.round(canvasHeight * fraction));
+      const variance = rng.nextFloat(varianceRange[0], varianceRange[1]);
+      if (currentAspectSum >= targetRowAspect * variance && currentRow.length >= 2) {
+        rows.push(currentRow);
+        currentRow = [];
+        currentAspectSum = 0;
+      }
     }
 
-    let curX = 0;
-    for (let cIdx = 0; cIdx < row.length; cIdx++) {
-      const photo = row[cIdx];
-      let photoW: number;
-
-      if (cIdx === row.length - 1) {
-        photoW = Math.max(1, canvasWidth - curX);
+    if (currentRow.length > 0) {
+      if (rows.length > 0 && currentRow.length === 1) {
+        rows[rows.length - 1].push(currentRow[0]);
       } else {
-        const frac = photo.aspectRatio / rowAspect;
-        photoW = Math.max(1, Math.round(canvasWidth * frac));
+        rows.push(currentRow);
       }
+    }
+  }
+
+  const activeRows = rows.filter(r => r.length > 0);
+  if (activeRows.length === 0) return placements;
+
+  const rowAspectSums = activeRows.map(r => r.reduce((sum, p) => sum + p.aspectRatio, 0));
+  const relHeights = rowAspectSums.map(s => (s > 0 ? 1.0 / s : 1.0));
+  const totalRelH = relHeights.reduce((sum, h) => sum + h, 0);
+  const blockAspect = totalRelH > 0 ? 1.0 / totalRelH : 1.0;
+
+  const canvasAspect = canvasWidth / canvasHeight;
+  let blockW: number;
+  let blockH: number;
+  let startX: number;
+  let startY: number;
+
+  if (blockAspect >= canvasAspect) {
+    blockW = canvasWidth;
+    blockH = Math.max(1, Math.round(canvasWidth / blockAspect));
+    startX = 0;
+    startY = Math.max(0, Math.round((canvasHeight - blockH) / 2));
+  } else {
+    blockH = canvasHeight;
+    blockW = Math.max(1, Math.round(canvasHeight * blockAspect));
+    startX = Math.max(0, Math.round((canvasWidth - blockW) / 2));
+    startY = 0;
+  }
+
+  let curY = startY;
+  for (let r = 0; r < activeRows.length; r++) {
+    const row = activeRows[r];
+    const rowSum = rowAspectSums[r];
+    const nextY = (r === activeRows.length - 1)
+      ? startY + blockH
+      : Math.round(startY + (blockH * (relHeights.slice(0, r + 1).reduce((a, b) => a + b, 0) / totalRelH)));
+    const rh = Math.max(1, nextY - curY);
+
+    let curX = startX;
+    let cumAspect = 0;
+
+    for (let i = 0; i < row.length; i++) {
+      const p = row[i];
+      cumAspect += p.aspectRatio;
+      const nextX = (i === row.length - 1)
+        ? startX + blockW
+        : Math.round(startX + (blockW * (cumAspect / rowSum)));
+      const pw = Math.max(1, nextX - curX);
 
       const pad = settings.spacing > 0 ? settings.spacing / 2 : 0;
       placements.push({
-        photoId: photo.id,
+        photoId: p.id,
         x: Math.round(curX + pad),
         y: Math.round(curY + pad),
-        width: Math.max(1, Math.round(photoW - settings.spacing)),
-        height: Math.max(1, Math.round(rowH - settings.spacing)),
-        aspectRatio: photo.aspectRatio,
+        width: Math.max(1, Math.round(pw - settings.spacing)),
+        height: Math.max(1, Math.round(rh - settings.spacing)),
+        aspectRatio: p.aspectRatio,
       });
-
-      curX += photoW;
+      curX = nextX;
     }
-    curY += rowH;
+    curY = nextY;
   }
 
   return placements;
@@ -849,7 +873,7 @@ export function buildJustifiedLayout(
 
 /**
  * Masonry Layout:
- * Multi-column arrangement with column widths.
+ * Multi-column arrangement with exact photo aspect ratios, zero crop, zero stretch, and zero gaps.
  */
 export function buildMasonryLayout(
   photos: Photo[],
@@ -863,108 +887,105 @@ export function buildMasonryLayout(
   if (N === 0) return placements;
 
   const shuffled = rng.shuffle(photos);
+  const numCols = Math.max(1, Math.min(N, Math.round(Math.sqrt(N * (canvasWidth / canvasHeight)))));
+
+  let cols: Photo[][] = [];
 
   if (settings.sizeVariation === 'low') {
-    // UNIFORM MODE: range strictly 0.70 - 1.30 * target area
-    const mults = getUniformMultipliers(N, rng, settings.randomness);
-    const targetAvgArea = (canvasWidth * canvasHeight) / N;
-    const photoItems = shuffled.map((p, i) => ({ photo: p, area: targetAvgArea * mults[i] }));
+    // UNIFORM MODE: Balance inverse aspect sums so column widths & photo areas are tightly uniform
+    const sorted = [...shuffled].sort((a, b) => a.aspectRatio - b.aspectRatio);
+    cols = Array.from({ length: numCols }, () => []);
 
-    const numCols = Math.max(1, Math.min(24, Math.round(Math.sqrt(N * (canvasWidth / canvasHeight)))));
-    const cols: { photo: Photo; area: number }[][] = Array(numCols).fill(0).map(() => []);
-
-    for (let i = 0; i < N; i++) {
-      cols[i % numCols].push(photoItems[i]);
-    }
-
-    const colAreas = cols.map(c => c.reduce((sum, item) => sum + item.area, 0));
-    const totalColArea = colAreas.reduce((sum, a) => sum + a, 0);
-
-    let curX = 0;
-    for (let cIdx = 0; cIdx < cols.length; cIdx++) {
-      const col = cols[cIdx];
-      const cArea = colAreas[cIdx];
-      const colW = (cIdx === cols.length - 1)
-        ? Math.max(1, canvasWidth - curX)
-        : Math.max(1, Math.round(canvasWidth * (cArea / totalColArea)));
-
-      let curY = 0;
-      for (let pIdx = 0; pIdx < col.length; pIdx++) {
-        const item = col[pIdx];
-        const photoH = (pIdx === col.length - 1)
-          ? Math.max(1, canvasHeight - curY)
-          : Math.max(1, Math.round(canvasHeight * (item.area / cArea)));
-
-        const pad = settings.spacing > 0 ? settings.spacing / 2 : 0;
-        placements.push({
-          photoId: item.photo.id,
-          x: Math.round(curX + pad),
-          y: Math.round(curY + pad),
-          width: Math.max(1, Math.round(colW - settings.spacing)),
-          height: Math.max(1, Math.round(photoH - settings.spacing)),
-          aspectRatio: item.photo.aspectRatio,
-        });
-        curY += photoH;
+    for (const p of sorted) {
+      let minCol = 0;
+      let minInvSum = cols[0].reduce((s, x) => s + 1 / x.aspectRatio, 0);
+      for (let c = 1; c < numCols; c++) {
+        const s = cols[c].reduce((acc, x) => acc + 1 / x.aspectRatio, 0);
+        if (s < minInvSum) {
+          minInvSum = s;
+          minCol = c;
+        }
       }
-      curX += colW;
+      cols[minCol].push(p);
     }
-    return placements;
+  } else {
+    // BALANCED / DYNAMIC MODE
+    cols = Array.from({ length: numCols }, () => []);
+    const colHeights = Array(numCols).fill(0);
+    const colWidth = Math.round(canvasWidth / numCols);
+
+    for (const p of shuffled) {
+      let minCol = 0;
+      let minH = colHeights[0];
+      for (let i = 1; i < numCols; i++) {
+        if (colHeights[i] < minH) {
+          minH = colHeights[i];
+          minCol = i;
+        }
+      }
+      cols[minCol].push(p);
+      colHeights[minCol] += colWidth / p.aspectRatio;
+    }
   }
 
-  // Balanced / Dynamic mode
-  const numCols = Math.max(
-    2,
-    Math.min(24, Math.round(Math.sqrt(N * (canvasWidth / canvasHeight))))
-  );
-  const colWidth = Math.round(canvasWidth / numCols);
+  const activeCols = cols.filter(c => c.length > 0);
+  if (activeCols.length === 0) return placements;
 
-  const cols: Photo[][] = Array(numCols).fill(0).map(() => []);
-  const colHeights = Array(numCols).fill(0);
+  const colInvAspectSums = activeCols.map(c => c.reduce((sum, p) => sum + 1 / p.aspectRatio, 0));
+  const relWidths = colInvAspectSums.map(s => (s > 0 ? 1.0 / s : 1.0));
+  const totalRelW = relWidths.reduce((sum, w) => sum + w, 0);
+  const blockAspect = totalRelW;
 
-  for (const p of shuffled) {
-    let minCol = 0;
-    let minH = colHeights[0];
-    for (let i = 1; i < numCols; i++) {
-      if (colHeights[i] < minH) {
-        minH = colHeights[i];
-        minCol = i;
-      }
-    }
-    cols[minCol].push(p);
-    colHeights[minCol] += colWidth / p.aspectRatio;
+  const canvasAspect = canvasWidth / canvasHeight;
+  let blockW: number;
+  let blockH: number;
+  let startX: number;
+  let startY: number;
+
+  if (blockAspect >= canvasAspect) {
+    blockW = canvasWidth;
+    blockH = Math.max(1, Math.round(canvasWidth / blockAspect));
+    startX = 0;
+    startY = Math.max(0, Math.round((canvasHeight - blockH) / 2));
+  } else {
+    blockH = canvasHeight;
+    blockW = Math.max(1, Math.round(canvasHeight * blockAspect));
+    startX = Math.max(0, Math.round((canvasWidth - blockW) / 2));
+    startY = 0;
   }
 
-  let curX = 0;
-  for (let c = 0; c < numCols; c++) {
-    const colPhotos = cols[c];
-    const actualW = (c === numCols - 1) ? canvasWidth - curX : colWidth;
+  let curX = startX;
+  for (let c = 0; c < activeCols.length; c++) {
+    const col = activeCols[c];
+    const colInvSum = colInvAspectSums[c];
+    const nextX = (c === activeCols.length - 1)
+      ? startX + blockW
+      : Math.round(startX + (blockW * (relWidths.slice(0, c + 1).reduce((a, b) => a + b, 0) / totalRelW)));
+    const cw = Math.max(1, nextX - curX);
 
-    const totalInvAspect = colPhotos.reduce((sum, p) => sum + (1 / p.aspectRatio), 0);
-    let curY = 0;
+    let curY = startY;
+    let cumInvAspect = 0;
 
-    for (let pIdx = 0; pIdx < colPhotos.length; pIdx++) {
-      const p = colPhotos[pIdx];
-      let itemH: number;
-      if (pIdx === colPhotos.length - 1) {
-        itemH = Math.max(1, canvasHeight - curY);
-      } else {
-        const fraction = (1 / p.aspectRatio) / totalInvAspect;
-        itemH = Math.max(1, Math.round(canvasHeight * fraction));
-      }
+    for (let pIdx = 0; pIdx < col.length; pIdx++) {
+      const p = col[pIdx];
+      cumInvAspect += 1 / p.aspectRatio;
+      const nextY = (pIdx === col.length - 1)
+        ? startY + blockH
+        : Math.round(startY + (blockH * (cumInvAspect / colInvSum)));
+      const ph = Math.max(1, nextY - curY);
 
       const pad = settings.spacing > 0 ? settings.spacing / 2 : 0;
       placements.push({
         photoId: p.id,
         x: Math.round(curX + pad),
         y: Math.round(curY + pad),
-        width: Math.max(1, Math.round(actualW - settings.spacing)),
-        height: Math.max(1, Math.round(itemH - settings.spacing)),
+        width: Math.max(1, Math.round(cw - settings.spacing)),
+        height: Math.max(1, Math.round(ph - settings.spacing)),
         aspectRatio: p.aspectRatio,
       });
-
-      curY += itemH;
+      curY = nextY;
     }
-    curX += actualW;
+    curX = nextX;
   }
 
   return placements;
@@ -972,7 +993,7 @@ export function buildMasonryLayout(
 
 /**
  * Grid Layout:
- * Conventional grid with aspect ratio preservation (letterbox fitted).
+ * Conventional grid with exact photo aspect ratios, zero crop, zero stretch, and zero gaps.
  */
 export function buildGridLayout(
   photos: Photo[],
@@ -981,52 +1002,6 @@ export function buildGridLayout(
   rng: SeededRNG,
   settings: LayoutSettings
 ): Placement[] {
-  const placements: Placement[] = [];
-  if (photos.length === 0) return placements;
-
-  const count = photos.length;
-  // Choose optimal column and row counts matching canvas aspect ratio
-  let cols = Math.max(1, Math.round(Math.sqrt(count * (canvasWidth / canvasHeight))));
-  let rows = Math.ceil(count / cols);
-
-  if (cols * (rows - 1) >= count) {
-    rows = rows - 1;
-  }
-
-  const cellH = canvasHeight / rows;
-  const shuffled = rng.shuffle(photos);
-
-  let pIdx = 0;
-  for (let r = 0; r < rows; r++) {
-    const curY = Math.round(r * cellH);
-    const nextY = Math.round((r + 1) * cellH);
-    const actualH = Math.max(1, nextY - curY);
-
-    const remainingPhotos = count - pIdx;
-    const remainingRows = rows - r;
-    const rowPhotoCount = Math.min(
-      remainingPhotos,
-      Math.ceil(remainingPhotos / remainingRows)
-    );
-
-    const cellW = canvasWidth / Math.max(1, rowPhotoCount);
-    for (let c = 0; c < rowPhotoCount; c++) {
-      const p = shuffled[pIdx++];
-      const curX = Math.round(c * cellW);
-      const nextX = Math.round((c + 1) * cellW);
-      const actualW = Math.max(1, nextX - curX);
-
-      const pad = settings.spacing > 0 ? settings.spacing / 2 : 0;
-      placements.push({
-        photoId: p.id,
-        x: Math.round(curX + pad),
-        y: Math.round(curY + pad),
-        width: Math.max(1, Math.round(actualW - settings.spacing)),
-        height: Math.max(1, Math.round(actualH - settings.spacing)),
-        aspectRatio: p.aspectRatio,
-      });
-    }
-  }
-
-  return placements;
+  // Use justified row layout to ensure exact zero-crop zero-stretch zero-gap tiling
+  return buildJustifiedLayout(photos, canvasWidth, canvasHeight, rng, settings);
 }
