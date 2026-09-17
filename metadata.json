@@ -1,0 +1,6 @@
+{
+  "name": "PhotoHive",
+  "description": "Dense, irregular automatic photo collage and mosaic maker preserving aspect ratios with zero gaps",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
