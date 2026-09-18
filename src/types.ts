@@ -23,7 +23,7 @@ export interface Placement {
   isAnchor?: boolean;
 }
 
-export type LayoutMode = 'photohive' | 'balanced_mosaic' | 'masonry' | 'justified' | 'grid';
+export type LayoutMode = 'balanced_mosaic';
 
 export type VariationLevel = 'low' | 'medium' | 'high';
 
@@ -63,6 +63,8 @@ export interface CandidateScore {
   maxPhotoArea: number;
   medianPhotoArea: number;
   meanPhotoArea: number;
+  minScaleFactor: number; // minPhotoArea / targetAvgArea
+  maxScaleFactor: number; // maxPhotoArea / targetAvgArea
   sizeRatio: number; // maxPhotoArea / minPhotoArea
   minDimension: number; // smallest width or height across all photos
   p10Area: number; // 10th percentile photo area

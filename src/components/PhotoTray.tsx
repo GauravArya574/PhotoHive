@@ -34,17 +34,11 @@ export const PhotoTray: React.FC<PhotoTrayProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterAspect, setFilterAspect] = useState<'all' | 'landscape' | 'portrait' | 'square'>('all');
 
   const placedSet = new Set(placements.map(p => p.photoId));
 
   const filteredPhotos = photos.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
-    if (!matchesSearch) return false;
-    if (filterAspect === 'landscape') return p.aspectRatio > 1.15;
-    if (filterAspect === 'portrait') return p.aspectRatio < 0.85;
-    if (filterAspect === 'square') return p.aspectRatio >= 0.85 && p.aspectRatio <= 1.15;
-    return true;
+    return p.name.toLowerCase().includes(searchQuery.toLowerCase());
   });
 
   if (photos.length === 0) return null;
@@ -64,13 +58,6 @@ export const PhotoTray: React.FC<PhotoTrayProps> = ({
               {photos.length}
             </span>
           </button>
-
-          {isOpen && (
-            <div className="hidden sm:flex items-center gap-2 text-[11px] text-zinc-400">
-              <span>•</span>
-              <span>{placements.length} placed in collage</span>
-            </div>
-          )}
         </div>
 
         {isOpen && (
@@ -86,18 +73,6 @@ export const PhotoTray: React.FC<PhotoTrayProps> = ({
                 className="bg-[#181922] border border-[#282a3a] rounded-md pl-7 pr-2 py-1 text-[11px] text-zinc-200 focus:outline-none focus:border-amber-500 w-36"
               />
             </div>
-
-            {/* Aspect filter */}
-            <select
-              value={filterAspect}
-              onChange={e => setFilterAspect(e.target.value as any)}
-              className="bg-[#181922] border border-[#282a3a] rounded-md px-2 py-1 text-[11px] text-zinc-300 focus:outline-none"
-            >
-              <option value="all">All Ratios</option>
-              <option value="landscape">Landscape (&gt;1.15)</option>
-              <option value="portrait">Portrait (&lt;0.85)</option>
-              <option value="square">Square (~1:1)</option>
-            </select>
 
             <button
               onClick={onOpenPhotoPicker}

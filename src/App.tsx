@@ -11,7 +11,7 @@ import { PhotoImporter } from './components/PhotoImporter';
 import { DebugModal } from './components/DebugModal';
 
 const INITIAL_SETTINGS: LayoutSettings = {
-  mode: 'photohive',
+  mode: 'balanced_mosaic',
   canvasWidth: 1920,
   canvasHeight: 1080,
   presetName: 'fhd',
@@ -42,6 +42,7 @@ export default function App() {
   photosRef.current = photos;
   const settingsRef = useRef<LayoutSettings>(settings);
   settingsRef.current = settings;
+  const generationIdRef = useRef<number>(0);
 
   // Run layout generation
   const runLayout = useCallback(
@@ -54,6 +55,7 @@ export default function App() {
         return;
       }
 
+      const thisGenId = ++generationIdRef.current;
       setIsGenerating(true);
       setGenerationProgress(5);
 
@@ -62,15 +64,21 @@ export default function App() {
           currentPhotos,
           currentSettings,
           (progress) => {
-            setGenerationProgress(progress);
+            if (generationIdRef.current === thisGenId) {
+              setGenerationProgress(progress);
+            }
           }
         );
-        setLayoutResult(result);
+        if (generationIdRef.current === thisGenId) {
+          setLayoutResult(result);
+        }
       } catch (err) {
         console.error('Layout generation error:', err);
       } finally {
-        setIsGenerating(false);
-        setGenerationProgress(100);
+        if (generationIdRef.current === thisGenId) {
+          setIsGenerating(false);
+          setGenerationProgress(100);
+        }
       }
     },
     []
@@ -239,11 +247,6 @@ export default function App() {
             photoCount={photos.length}
             layoutResult={layoutResult}
             settings={settings}
-            onLoadSamplePack={handleLoadSamplePack}
-            onSaveProject={handleSaveProject}
-            onLoadProject={handleLoadProject}
-            onToggleDebug={() => setIsDebugModalOpen(true)}
-            debugMode={debugOverlay}
           />
 
           {/* Main Working Area: Canvas Stage + Settings Sidebar */}

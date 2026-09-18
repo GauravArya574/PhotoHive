@@ -12,6 +12,7 @@ import {
   Sparkles,
   Info,
   ShieldCheck,
+  Loader2,
 } from 'lucide-react';
 
 interface CollagePreviewProps {
@@ -59,13 +60,12 @@ export const CollagePreview: React.FC<CollagePreviewProps> = ({
   const [startPan, setStartPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
   // Fast photo lookup map
-  const photosMap = useRef<Map<string, Photo>>(new Map());
-  useEffect(() => {
+  const photosMap = React.useMemo(() => {
     const map = new Map<string, Photo>();
     for (const p of photos) {
       map.set(p.id, p);
     }
-    photosMap.current = map;
+    return map;
   }, [photos]);
 
   // Adjust canvas internal resolution to match container while keeping exact aspect ratio
@@ -109,7 +109,7 @@ export const CollagePreview: React.FC<CollagePreviewProps> = ({
     renderPreview({
       canvas,
       placements,
-      photosMap: photosMap.current,
+      photosMap,
       canvasWidth: settings.canvasWidth,
       canvasHeight: settings.canvasHeight,
       backgroundColor: settings.backgroundColor,
@@ -119,6 +119,7 @@ export const CollagePreview: React.FC<CollagePreviewProps> = ({
     });
   }, [
     placements,
+    photosMap,
     settings.canvasWidth,
     settings.canvasHeight,
     settings.backgroundColor,
@@ -228,7 +229,7 @@ export const CollagePreview: React.FC<CollagePreviewProps> = ({
     setSwapSourceId(null);
   };
 
-  const selectedPhoto = selectedPhotoId ? photosMap.current.get(selectedPhotoId) : null;
+  const selectedPhoto = selectedPhotoId ? photosMap.get(selectedPhotoId) : null;
   const selectedPlacement = selectedPhotoId
     ? placements.find(p => p.photoId === selectedPhotoId)
     : null;
@@ -340,7 +341,7 @@ export const CollagePreview: React.FC<CollagePreviewProps> = ({
           </div>
         ) : (
           <div
-            className="transition-transform duration-100 ease-out shadow-2xl rounded-sm"
+            className="transition-transform duration-100 ease-out shadow-2xl rounded-sm relative"
             style={{
               transform: `scale(${zoomLevel}) translate(${panOffset.x}px, ${panOffset.y}px)`,
             }}
@@ -352,6 +353,57 @@ export const CollagePreview: React.FC<CollagePreviewProps> = ({
               onClick={handleClick}
               className="rounded-sm block shadow-2xl border border-[#22242e]"
             />
+          </div>
+        )}
+
+        {/* Live Generation & Optimization Loading Overlay */}
+        {isGenerating && (
+          <div className="absolute inset-0 bg-[#0a0a0e]/75 backdrop-blur-xs z-40 flex flex-col items-center justify-center p-4 select-none">
+            <div className="bg-[#14151e]/95 border border-[#2e3144] p-6 rounded-2xl shadow-2xl flex flex-col items-center gap-4 text-center max-w-sm w-full">
+              <div className="relative flex items-center justify-center">
+                <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shadow-lg shadow-amber-500/10">
+                  <Loader2 className="w-6 h-6 text-amber-400 animate-spin" />
+                </div>
+                <div className="absolute -top-1 -right-1">
+                  <span className="flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500" />
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <h4 className="font-bold text-white text-sm">Finding Optimal Layout</h4>
+                <p className="text-xs text-zinc-400">
+                  Searching permutations to satisfy size and coverage constraints...
+                </p>
+              </div>
+
+              {/* Progress Bar */}
+              <div className="w-full space-y-1.5 pt-1">
+                <div className="flex justify-between text-[11px] font-mono">
+                  <span className="text-zinc-400">Constraint Optimization</span>
+                  <span className="text-amber-300 font-semibold">{Math.max(5, Math.min(100, Math.round(generationProgress)))}%</span>
+                </div>
+                <div className="h-2 w-full bg-[#202230] rounded-full overflow-hidden p-0.5 border border-[#2a2c3e]">
+                  <div
+                    className="h-full bg-linear-to-r from-amber-500 to-amber-300 rounded-full transition-all duration-150 ease-out"
+                    style={{ width: `${Math.max(5, Math.min(100, generationProgress))}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 text-[10px] text-zinc-400 pt-1">
+                <Sparkles className="w-3 h-3 text-amber-400" />
+                <span>
+                  {settings.sizeVariation === 'low'
+                    ? 'Uniform Mode • Scale locked (0.7×–1.3×)'
+                    : settings.sizeVariation === 'medium'
+                    ? 'Balanced Mode • Harmonized ratios'
+                    : 'Dynamic Mode • Varied scales'}
+                </span>
+              </div>
+            </div>
           </div>
         )}
       </div>

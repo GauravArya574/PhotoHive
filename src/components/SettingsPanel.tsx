@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   LayoutSettings,
-  LayoutMode,
   VariationLevel,
   CANVAS_PRESETS,
   CanvasPreset,
@@ -11,12 +10,9 @@ import {
   RefreshCw,
   Download,
   Shuffle,
-  Grid,
   Maximize,
-  Palette,
-  Sparkles,
-  Layers,
   Check,
+  Lock,
 } from 'lucide-react';
 
 interface SettingsPanelProps {
@@ -169,40 +165,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           )}
         </div>
 
-        {/* Layout Mode Selector */}
-        <div className="space-y-2.5 pt-2 border-t border-[#1f202b]">
-          <label className="font-semibold text-white flex items-center gap-1.5">
-            <Grid className="w-3.5 h-3.5 text-amber-400" />
-            <span>Layout Mode</span>
-          </label>
-
-          <div className="grid grid-cols-1 gap-1.5">
-            {[
-              { id: 'photohive', name: 'PhotoHive (Organic Mosaic)', desc: 'Tightly packed, varied sizes, zero gaps' },
-              { id: 'balanced_mosaic', name: 'Balanced Mosaic', desc: 'Symmetrical aspect-balanced partitions' },
-              { id: 'masonry', name: 'Masonry Columns', desc: 'Asymmetric Pinterest-style columns' },
-              { id: 'justified', name: 'Justified Rows', desc: 'Continuous rows with dynamic heights' },
-              { id: 'grid', name: 'Grid', desc: 'Structured matrix with aspect preservation' },
-            ].map(m => (
-              <button
-                key={m.id}
-                onClick={() => onChangeSettings({ ...settings, mode: m.id as LayoutMode })}
-                className={`w-full text-left p-2.5 rounded-lg border transition-all ${
-                  settings.mode === m.id
-                    ? 'bg-amber-500/10 border-amber-500/50 text-white shadow-xs'
-                    : 'bg-[#181922] border-[#262835] hover:border-[#383a4c] text-zinc-400'
-                }`}
-              >
-                <div className="font-semibold flex items-center justify-between">
-                  <span className={settings.mode === m.id ? 'text-amber-300' : ''}>{m.name}</span>
-                  {settings.mode === m.id && <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />}
-                </div>
-                <div className="text-[10px] text-zinc-400 mt-0.5">{m.desc}</div>
-              </button>
-            ))}
-          </div>
-        </div>
-
         {/* Packing & Sizing Sliders */}
         <div className="space-y-3.5 pt-2 border-t border-[#1f202b]">
           <div className="flex items-center justify-between">
@@ -216,9 +178,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           <div>
             <div className="flex justify-between text-[11px] mb-1">
               <span className="text-zinc-400">Photo Size Variation:</span>
-              <span className="font-semibold text-amber-300 uppercase text-[10px]">
+              <span className="font-semibold text-amber-300 uppercase text-[10px] flex items-center gap-1">
+                {settings.sizeVariation === 'low' && <Lock className="w-3 h-3 text-emerald-400 inline" />}
                 {settings.sizeVariation === 'low'
-                  ? 'Uniform (0.7×–1.3× target area)'
+                  ? 'Uniform (Locked 0.7×–1.3×)'
                   : settings.sizeVariation === 'medium'
                   ? 'Balanced (~1.8× area range)'
                   : 'Dynamic (~3.5× area range)'}
@@ -226,9 +189,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             </div>
             <div className="grid grid-cols-3 gap-1 bg-[#181922] p-1 rounded-lg border border-[#272938]">
               {([
-                { id: 'low', label: 'Low', hint: '0.7–1.3×' },
-                { id: 'medium', label: 'Med', hint: 'Balanced' },
-                { id: 'high', label: 'High', hint: 'Dynamic' },
+                { id: 'low', label: 'Uniform', hint: '0.7–1.3× Locked' },
+                { id: 'medium', label: 'Balanced', hint: 'Moderate' },
+                { id: 'high', label: 'Dynamic', hint: 'High Range' },
               ] as { id: VariationLevel; label: string; hint: string }[]).map(lvl => (
                 <button
                   key={lvl.id}
@@ -239,7 +202,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                       : 'text-zinc-400 hover:text-white hover:bg-[#20222f]'
                   }`}
                 >
-                  <div className="text-[11px] font-semibold">{lvl.label}</div>
+                  <div className="text-[11px] font-semibold flex items-center justify-center gap-0.5">
+                    {lvl.id === 'low' && <Lock className="w-2.5 h-2.5" />}
+                    <span>{lvl.label}</span>
+                  </div>
                   <div
                     className={`text-[9px] ${
                       settings.sizeVariation === lvl.id ? 'text-black/80' : 'text-zinc-500'

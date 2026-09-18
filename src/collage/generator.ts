@@ -1,14 +1,10 @@
-import { Photo, Placement, LayoutSettings, LayoutResult } from '../types';
+import { Photo, Placement, LayoutSettings, LayoutResult, CandidateScore } from '../types';
 import { SeededRNG } from './random';
 import { scoreLayout } from './scoring';
 import {
-  buildPhotoHiveTree,
   buildBalancedMosaicTree,
-  buildJustifiedLayout,
-  buildMasonryLayout,
-  buildGridLayout,
+  solveStrictUniformLayout,
   layoutNodeToPlacements,
-  getNodeAspectRatio,
 } from './packing';
 
 /**
@@ -73,9 +69,105 @@ function performSanityChecks(
 }
 
 /**
+ * Checks whether a candidate layout strictly adheres to all user and system constraints.
+ */
+function isCandidateCompliant(
+  placements: Placement[],
+  scoreObj: CandidateScore,
+  settings: LayoutSettings,
+  expectedCount: number
+): boolean {
+  if (!placements || placements.length !== expectedCount) return false;
+
+  const minSFAllowed =
+    settings.sizeVariation === 'low'
+      ? 0.70
+      : settings.sizeVariation === 'medium'
+      ? 0.40
+      : 0.20;
+
+  const maxSFAllowed =
+    settings.sizeVariation === 'low'
+      ? 1.30
+      : settings.sizeVariation === 'medium'
+      ? 2.20
+      : 4.50;
+
+  const minCoverageAllowed = 0.959; // >= 96.0% coverage
+
+  // In low variation mode, enforce 0.70x to 1.30x scale factor limits
+  if (scoreObj.minScaleFactor < minSFAllowed - 0.005) return false;
+  if (scoreObj.maxScaleFactor > maxSFAllowed + 0.005) return false;
+  if (scoreObj.coverage < minCoverageAllowed) return false;
+
+  // Min photo size check (adaptive for very dense sets)
+  const theoreticalAvgSide = Math.sqrt((settings.canvasWidth * settings.canvasHeight) / expectedCount);
+  const feasibleMinDim = Math.min(settings.minPhotoSize, Math.max(8, Math.round(theoreticalAvgSide * 0.35)));
+  if (settings.minPhotoSize > 0 && scoreObj.minDimension < feasibleMinDim) {
+    return false;
+  }
+
+  // Quick sanity validation
+  for (const p of placements) {
+    if (isNaN(p.x) || isNaN(p.y) || isNaN(p.width) || isNaN(p.height)) return false;
+    if (
+      p.x < -1 ||
+      p.y < -1 ||
+      p.x + p.width > settings.canvasWidth + 2 ||
+      p.y + p.height > settings.canvasHeight + 2
+    ) {
+      return false;
+    }
+    const currentRatio = p.width / Math.max(1, p.height);
+    if (Math.abs(currentRatio - p.aspectRatio) / p.aspectRatio > 0.08) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Calculates a candidate layout for a specific iteration seed and layout mode.
+ */
+function generateSingleCandidate(
+  photos: Photo[],
+  settings: LayoutSettings,
+  targetAspect: number,
+  canvasWidth: number,
+  canvasHeight: number,
+  rng: SeededRNG
+): Placement[] {
+  if (settings.sizeVariation === 'low') {
+    const uniformPlacements = solveStrictUniformLayout(
+      photos,
+      canvasWidth,
+      canvasHeight,
+      settings.spacing,
+      rng
+    );
+    if (uniformPlacements && uniformPlacements.length === photos.length) {
+      return uniformPlacements;
+    }
+  }
+
+  const tree = buildBalancedMosaicTree(photos, targetAspect, rng, settings);
+  return layoutNodeToPlacements(
+    tree,
+    0,
+    0,
+    canvasWidth,
+    canvasHeight,
+    settings.spacing,
+    [],
+    false
+  );
+}
+
+/**
  * Main Layout Generator:
- * Generates N candidate layouts using stochastic sampling, scores them according to aesthetic
- * criteria, and returns the highest-scoring candidate with full metadata and sanity verification.
+ * Generates candidate layouts iteratively until finding ones that strictly satisfy
+ * all geometric and scaling constraints, with non-blocking async execution and live progress.
  */
 export async function generateCollageLayout(
   photos: Photo[],
@@ -104,201 +196,161 @@ export async function generateCollageLayout(
     };
   }
 
-  // Determine candidate count based on photo count and performance budget
-  const count = photos.length;
-  let candidateCount = 24;
-  if (count <= 25) candidateCount = 36;
-  else if (count <= 80) candidateCount = 20;
-  else if (count <= 200) candidateCount = 14;
-  else candidateCount = 8; // 500+ photos
-
   const canvasWidth = settings.canvasWidth;
   const canvasHeight = settings.canvasHeight;
   const targetAspect = canvasWidth / canvasHeight;
+  const count = photos.length;
 
-  let bestPlacements: Placement[] = [];
-  let bestScore = -Infinity;
-  let bestScoreObj = scoreLayout([], canvasWidth, canvasHeight, settings);
+  let candidateCount = 28;
+  if (settings.sizeVariation === 'low') {
+    if (count <= 30) candidateCount = 48;
+    else if (count <= 90) candidateCount = 36;
+    else if (count <= 200) candidateCount = 24;
+    else candidateCount = 16;
+  } else {
+    if (count <= 25) candidateCount = 32;
+    else if (count <= 80) candidateCount = 20;
+    else if (count <= 200) candidateCount = 14;
+    else candidateCount = 10;
+  }
 
+  let bestCompliantPlacements: Placement[] = [];
+  let bestCompliantScore = -Infinity;
+  let bestCompliantScoreObj: CandidateScore | null = null;
+
+  let bestAnyPlacements: Placement[] = [];
+  let bestAnyScore = -Infinity;
+  let bestAnyScoreObj = scoreLayout([], canvasWidth, canvasHeight, settings);
+
+  // Phase 1: Iterative stochastic candidate search (non-blocking)
   for (let c = 0; c < candidateCount; c++) {
-    // Deterministic seed for each candidate iteration derived from settings.seed
-    const iterSeed = (settings.seed + c * 7919) >>> 0;
+    // Yield to browser event loop on every candidate to keep the UI smooth and update progress
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const iterSeed = (settings.seed + c * 7919 + c * 31) >>> 0;
     const rng = new SeededRNG(iterSeed);
 
-    let candidatePlacements: Placement[] = [];
+    const candidatePlacements = generateSingleCandidate(
+      photos,
+      settings,
+      targetAspect,
+      canvasWidth,
+      canvasHeight,
+      rng
+    );
 
-    switch (settings.mode) {
-      case 'photohive':
-      case 'balanced_mosaic': {
-        const tree = settings.mode === 'photohive'
-          ? buildPhotoHiveTree(photos, targetAspect, rng, settings)
-          : buildBalancedMosaicTree(photos, targetAspect, rng, settings);
+    if (candidatePlacements && candidatePlacements.length === count) {
+      const scoreObj = scoreLayout(candidatePlacements, canvasWidth, canvasHeight, settings);
+      const compliant = isCandidateCompliant(candidatePlacements, scoreObj, settings, count);
 
-        const treeAspect = getNodeAspectRatio(tree);
-
-        let placeW: number;
-        let placeH: number;
-        let startX: number;
-        let startY: number;
-
-        if (treeAspect >= targetAspect) {
-          placeW = canvasWidth;
-          placeH = Math.max(1, Math.round(canvasWidth / treeAspect));
-          startX = 0;
-          startY = Math.max(0, Math.round((canvasHeight - placeH) / 2));
-        } else {
-          placeH = canvasHeight;
-          placeW = Math.max(1, Math.round(canvasHeight * treeAspect));
-          startX = Math.max(0, Math.round((canvasWidth - placeW) / 2));
-          startY = 0;
+      if (compliant) {
+        const compositeScore = scoreObj.totalScore + scoreObj.coverage * 50;
+        if (compositeScore > bestCompliantScore) {
+          bestCompliantScore = compositeScore;
+          bestCompliantPlacements = candidatePlacements;
+          bestCompliantScoreObj = scoreObj;
         }
-
-        candidatePlacements = layoutNodeToPlacements(
-          tree,
-          startX,
-          startY,
-          placeW,
-          placeH,
-          settings.spacing,
-          [],
-          true
-        );
-        break;
-      }
-      case 'justified': {
-        candidatePlacements = buildJustifiedLayout(
-          photos,
-          canvasWidth,
-          canvasHeight,
-          rng,
-          settings
-        );
-        break;
-      }
-      case 'masonry': {
-        candidatePlacements = buildMasonryLayout(
-          photos,
-          canvasWidth,
-          canvasHeight,
-          rng,
-          settings
-        );
-        break;
-      }
-      case 'grid': {
-        candidatePlacements = buildGridLayout(
-          photos,
-          canvasWidth,
-          canvasHeight,
-          rng,
-          settings
-        );
-        break;
-      }
-    }
-
-    // Aesthetic evaluation
-    const scoreObj = scoreLayout(candidatePlacements, canvasWidth, canvasHeight, settings);
-
-    // Prioritize candidates:
-    // In uniform mode: verify scale factor bounds [0.70x, 1.30x] relative to average photo area, coverage, then score
-    let candidateBoundPenalty = 0;
-    let candidateViolatesBounds = false;
-    if (settings.sizeVariation === 'low' && candidatePlacements.length > 0) {
-      const totalCandArea = candidatePlacements.reduce((s, p) => s + p.width * p.height, 0);
-      const candAvgArea = totalCandArea / count;
-      for (const p of candidatePlacements) {
-        const r = (p.width * p.height) / candAvgArea;
-        if (r < 0.6999) {
-          candidateViolatesBounds = true;
-          candidateBoundPenalty += (0.70 - r) * 100;
-        } else if (r > 1.3001) {
-          candidateViolatesBounds = true;
-          candidateBoundPenalty += (r - 1.30) * 100;
-        }
-      }
-    }
-
-    const candidateCoverage = scoreObj.coverage;
-    const isHighCoverage = candidateCoverage >= 0.97;
-    const bestIsHighCoverage = bestScoreObj.coverage >= 0.97;
-
-    let bestBoundPenalty = 0;
-    let bestViolatesBounds = false;
-    if (settings.sizeVariation === 'low' && bestPlacements.length > 0) {
-      const totalBestArea = bestPlacements.reduce((s, p) => s + p.width * p.height, 0);
-      const bestAvgArea = totalBestArea / count;
-      for (const p of bestPlacements) {
-        const r = (p.width * p.height) / bestAvgArea;
-        if (r < 0.6999) {
-          bestViolatesBounds = true;
-          bestBoundPenalty += (0.70 - r) * 100;
-        } else if (r > 1.3001) {
-          bestViolatesBounds = true;
-          bestBoundPenalty += (r - 1.30) * 100;
-        }
-      }
-    }
-
-    let isBetter = false;
-    if (c === 0) {
-      isBetter = true;
-    } else if (settings.sizeVariation === 'low') {
-      // In uniform mode: strict penalty for breaking [0.70x, 1.30x], then coverage, then score
-      if (candidateBoundPenalty < bestBoundPenalty - 0.01) {
-        isBetter = true;
-      } else if (candidateBoundPenalty > bestBoundPenalty + 0.01) {
-        isBetter = false;
-      } else if (candidateCoverage > bestScoreObj.coverage + 0.02) {
-        isBetter = true;
-      } else if (candidateCoverage < bestScoreObj.coverage - 0.02) {
-        isBetter = false;
       } else {
-        isBetter = scoreObj.totalScore > bestScore;
+        if (scoreObj.totalScore > bestAnyScore) {
+          bestAnyScore = scoreObj.totalScore;
+          bestAnyPlacements = candidatePlacements;
+          bestAnyScoreObj = scoreObj;
+        }
       }
-    } else if (settings.mode === 'balanced_mosaic') {
-      // For balanced mosaic in medium/high: optimize for canvas coverage first, then totalScore
-      const covDiff = candidateCoverage - bestScoreObj.coverage;
-      if (covDiff > 0.015) {
-        isBetter = true;
-      } else if (covDiff < -0.015) {
-        isBetter = false;
-      } else {
-        isBetter = scoreObj.totalScore > bestScore;
-      }
-    } else if (bestViolatesBounds && !candidateViolatesBounds) {
-      isBetter = true;
-    } else if (!bestViolatesBounds && candidateViolatesBounds) {
-      isBetter = false;
-    } else if (isHighCoverage && !bestIsHighCoverage) {
-      isBetter = true;
-    } else if (!isHighCoverage && bestIsHighCoverage) {
-      isBetter = false;
-    } else if (isHighCoverage && bestIsHighCoverage) {
-      isBetter = scoreObj.totalScore > bestScore;
-    } else {
-      isBetter =
-        candidateCoverage > bestScoreObj.coverage ||
-        (candidateCoverage === bestScoreObj.coverage && scoreObj.totalScore > bestScore);
     }
 
-    if (isBetter) {
-      bestScore = scoreObj.totalScore;
-      bestPlacements = candidatePlacements;
-      bestScoreObj = scoreObj;
+    if (onProgress) {
+      const progressPercent = Math.min(85, Math.round(((c + 1) / candidateCount) * 80));
+      onProgress(progressPercent, c + 1);
     }
+  }
 
-    if (onProgress && c % 4 === 0) {
-      onProgress(Math.round(((c + 1) / candidateCount) * 100), c + 1);
-      // Give UI breathing room if very large set
-      if (count > 150) {
-        await new Promise(r => setTimeout(r, 0));
+  // Phase 2: If no compliant candidate found yet, search with additional varied seeds
+  if (bestCompliantPlacements.length === 0) {
+    const extraAttempts = 20;
+    for (let extra = 0; extra < extraAttempts; extra++) {
+      // Yield to event loop
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      const extraSeed = (settings.seed + 99991 + extra * 12289) >>> 0;
+      const extraRNG = new SeededRNG(extraSeed);
+
+      const candidatePlacements = generateSingleCandidate(
+        photos,
+        settings,
+        targetAspect,
+        canvasWidth,
+        canvasHeight,
+        extraRNG
+      );
+
+      if (candidatePlacements && candidatePlacements.length === count) {
+        const scoreObj = scoreLayout(candidatePlacements, canvasWidth, canvasHeight, settings);
+        const compliant = isCandidateCompliant(candidatePlacements, scoreObj, settings, count);
+
+        if (compliant) {
+          const compositeScore = scoreObj.totalScore + scoreObj.coverage * 50;
+          if (compositeScore > bestCompliantScore) {
+            bestCompliantScore = compositeScore;
+            bestCompliantPlacements = candidatePlacements;
+            bestCompliantScoreObj = scoreObj;
+          }
+        } else if (scoreObj.totalScore > bestAnyScore) {
+          bestAnyScore = scoreObj.totalScore;
+          bestAnyPlacements = candidatePlacements;
+          bestAnyScoreObj = scoreObj;
+        }
+      }
+
+      if (onProgress) {
+        onProgress(80 + Math.round(((extra + 1) / extraAttempts) * 18), candidateCount + extra + 1);
+      }
+
+      // If we found a high quality compliant candidate, we can complete
+      if (bestCompliantPlacements.length > 0 && extra >= 3) {
+        break;
       }
     }
   }
 
+  // Select final placements: always prefer compliant layouts, then best mosaic candidate
+  let finalPlacements: Placement[];
+  let finalScoreObj: CandidateScore;
+
+  if (bestCompliantPlacements.length > 0 && bestCompliantScoreObj) {
+    finalPlacements = bestCompliantPlacements;
+    finalScoreObj = bestCompliantScoreObj;
+  } else if (settings.sizeVariation === 'low') {
+    const fallbackRNG = new SeededRNG(settings.seed);
+    const uniformPlacements = solveStrictUniformLayout(
+      photos,
+      canvasWidth,
+      canvasHeight,
+      settings.spacing,
+      fallbackRNG
+    );
+    finalPlacements = uniformPlacements;
+    finalScoreObj = scoreLayout(uniformPlacements, canvasWidth, canvasHeight, settings);
+  } else if (bestAnyPlacements.length > 0 && bestAnyScoreObj) {
+    finalPlacements = bestAnyPlacements;
+    finalScoreObj = bestAnyScoreObj;
+  } else {
+    // Ultimate fallback if no candidate produced any placement
+    const guaranteedRNG = new SeededRNG(settings.seed);
+    const guaranteedPlacements = generateSingleCandidate(
+      photos,
+      settings,
+      targetAspect,
+      canvasWidth,
+      canvasHeight,
+      guaranteedRNG
+    );
+    finalPlacements = guaranteedPlacements;
+    finalScoreObj = scoreLayout(guaranteedPlacements, canvasWidth, canvasHeight, settings);
+  }
+
   const sanityCheck = performSanityChecks(
-    bestPlacements,
+    finalPlacements,
     canvasWidth,
     canvasHeight,
     photos.length
@@ -306,14 +358,19 @@ export async function generateCollageLayout(
 
   const executionTimeMs = Math.round(performance.now() - startTime);
 
+  if (onProgress) {
+    onProgress(100, candidateCount);
+  }
+
   return {
-    placements: bestPlacements,
+    placements: finalPlacements,
     canvasWidth,
     canvasHeight,
-    coverage: Math.round(bestScoreObj.coverage * 1000) / 10,
-    score: bestScoreObj,
+    coverage: Math.round(finalScoreObj.coverage * 1000) / 10,
+    score: finalScoreObj,
     seed: settings.seed,
     executionTimeMs,
     sanityCheck,
   };
 }
+

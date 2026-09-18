@@ -27,7 +27,11 @@ export const DebugModal: React.FC<DebugModalProps> = ({
   const score = layoutResult?.score;
   const placements = layoutResult?.placements || [];
   const targetArea = (settings.canvasWidth * settings.canvasHeight) / Math.max(1, photoCount);
-  const areas = placements.map(p => p.width * p.height);
+  const areas = placements.map(p => {
+    const cellW = settings.spacing > 0 ? p.width + settings.spacing : p.width;
+    const cellH = settings.spacing > 0 ? p.height + settings.spacing : p.height;
+    return cellW * cellH;
+  });
   const minAreaRatio = areas.length > 0 ? Math.min(...areas) / targetArea : 1;
   const maxAreaRatio = areas.length > 0 ? Math.max(...areas) / targetArea : 1;
 
@@ -144,11 +148,29 @@ export const DebugModal: React.FC<DebugModalProps> = ({
               </div>
 
               <div className="bg-[#1a1b24] border border-[#2c2e3e] p-3 rounded-lg flex items-center gap-2.5">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                {settings.sizeVariation === 'low' && (minAreaRatio < 0.695 || maxAreaRatio > 1.305) ? (
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                ) : (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                )}
                 <div>
-                  <div className="font-semibold text-white">Area Uniformity (Canvas / N)</div>
+                  <div className="font-semibold text-white">Scale Factor Lock (.7 to 1.3)</div>
                   <div className="text-[10px] text-zinc-400">
-                    Target: {Math.round(targetArea).toLocaleString()} px² • Range: {minAreaRatio.toFixed(2)}× to {maxAreaRatio.toFixed(2)}×
+                    Range: {minAreaRatio.toFixed(2)}× to {maxAreaRatio.toFixed(2)}× • {settings.sizeVariation === 'low' ? 'Locked [0.70x, 1.30x]' : 'Unlocked'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-[#1a1b24] border border-[#2c2e3e] p-3 rounded-lg flex items-center gap-2.5">
+                {(score?.coverage || 0) >= 0.96 ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                )}
+                <div>
+                  <div className="font-semibold text-white">Coverage Threshold (≥ 96%)</div>
+                  <div className="text-[10px] text-zinc-400">
+                    Achieved: {layoutResult ? layoutResult.coverage : 0}% • Requirement: ≥ 96.0%
                   </div>
                 </div>
               </div>

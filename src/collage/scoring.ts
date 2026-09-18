@@ -53,6 +53,8 @@ export function scoreLayout(
       maxPhotoArea: 0,
       medianPhotoArea: 0,
       meanPhotoArea: 0,
+      minScaleFactor: 1,
+      maxScaleFactor: 1,
       sizeRatio: 1,
       minDimension: 0,
       p10Area: 0,
@@ -100,7 +102,9 @@ export function scoreLayout(
   let microscopicPhotoPenalty = 0;
 
   for (const p of placements) {
-    const area = p.width * p.height;
+    const cellW = settings.spacing > 0 ? p.width + settings.spacing : p.width;
+    const cellH = settings.spacing > 0 ? p.height + settings.spacing : p.height;
+    const area = cellW * cellH;
     totalPhotoArea += area;
     photoAreas.push(area);
 
@@ -152,34 +156,40 @@ export function scoreLayout(
   const p25Area = getPercentile(sortedAreas, 0.25);
   const p75Area = getPercentile(sortedAreas, 0.75);
   const p90Area = getPercentile(sortedAreas, 0.90);
+  const minScaleFactor = minPhotoArea / Math.max(1, targetAvgArea);
+  const maxScaleFactor = maxPhotoArea / Math.max(1, targetAvgArea);
   const sizeRatio = maxPhotoArea / Math.max(1, minPhotoArea);
   const areaDeviations = photoAreas.map(a => Math.abs(a - targetAvgArea) / targetAvgArea);
   const meanRelDev = areaDeviations.reduce((sum, d) => sum + d, 0) / count;
 
-  // 1. Extreme Size Ratio Penalty
+  // 1. Extreme Size Ratio Penalty & Uniform Mode Scale Factor Lock [0.70x, 1.30x]
   let maxAllowedRatio = 3.8; // medium default
-  if (settings.sizeVariation === 'low') maxAllowedRatio = 2.05;
+  if (settings.sizeVariation === 'low') maxAllowedRatio = 1.86; // 1.30 / 0.70 = 1.857
   if (settings.sizeVariation === 'high') maxAllowedRatio = 10.0;
 
   let extremeSizeRatioPenalty = 0;
-  if (sizeRatio > maxAllowedRatio) {
+  if (settings.sizeVariation === 'low') {
+    // Strict penalty for breaking [0.70x, 1.30x]
+    if (minScaleFactor < 0.6999) {
+      extremeSizeRatioPenalty += (0.70 - minScaleFactor) * 150;
+    }
+    if (maxScaleFactor > 1.3001) {
+      extremeSizeRatioPenalty += (maxScaleFactor - 1.30) * 150;
+    }
+  } else if (sizeRatio > maxAllowedRatio) {
     const excess = (sizeRatio - maxAllowedRatio) / maxAllowedRatio;
-    extremeSizeRatioPenalty = Math.min(45, Math.pow(excess, 1.2) * (settings.sizeVariation === 'low' ? 30 : 18));
+    extremeSizeRatioPenalty = Math.min(45, Math.pow(excess, 1.2) * 18);
     if (sizeRatio > 25) {
       extremeSizeRatioPenalty += 25;
     }
   }
 
   // 2. Photo Size Distribution Score (0 to 1)
-  // Evaluated directly against targetAvgArea = canvasArea / count:
-  // In uniform mode, photos stay within 0.70 - 1.30 * targetAvgArea (meanRelDev ~ 0.15).
-  // In balanced mode, moderate shift from targetAvgArea.
-  // In dynamic mode, higher shift from targetAvgArea.
   let sizeDistributionScore = 0;
   if (settings.sizeVariation === 'low') {
     const outOfBoundsPenalty =
-      (minPhotoArea < targetAvgArea * 0.70 ? (targetAvgArea * 0.70 - minPhotoArea) / targetAvgArea : 0) +
-      (maxPhotoArea > targetAvgArea * 1.30 ? (maxPhotoArea - targetAvgArea * 1.30) / targetAvgArea : 0);
+      (minScaleFactor < 0.70 ? 0.70 - minScaleFactor : 0) +
+      (maxScaleFactor > 1.30 ? maxScaleFactor - 1.30 : 0);
     sizeDistributionScore = Math.max(0, 1 - Math.abs(meanRelDev - 0.15) / 0.20 - outOfBoundsPenalty * 50);
   } else if (settings.sizeVariation === 'medium') {
     const targetDev = 0.18;
@@ -200,7 +210,7 @@ export function scoreLayout(
 
   sizeDistributionScore = Math.max(0, Math.min(1, sizeDistributionScore - singlePhotoDominancePenalty));
 
-  // 3. Canvas Coverage Score (0 to 1) - optimized for coverage
+  // 3. Canvas Coverage Score (0 to 1) - Target: 96% and above (>= 0.96)
   const coveredArea = placements.reduce((sum, p) => {
     const cellW = settings.spacing > 0 ? p.width + settings.spacing : p.width;
     const cellH = settings.spacing > 0 ? p.height + settings.spacing : p.height;
@@ -208,10 +218,10 @@ export function scoreLayout(
   }, 0);
   const coverage = Math.min(1, Math.max(0, coveredArea / canvasArea));
 
-  // Severe penalty if coverage is below 97% (except balanced_mosaic which preserves native ratios without cropping)
+  // Severe penalty if coverage is below 96.0% (0.96)
   let lowCoveragePenalty = 0;
-  if (settings.mode !== 'balanced_mosaic' && coverage < 0.97) {
-    lowCoveragePenalty = Math.pow((0.97 - coverage) * 100, 1.4) * 3.5;
+  if (coverage < 0.96) {
+    lowCoveragePenalty = Math.pow((0.96 - coverage) * 100, 1.5) * 8.0 + 30;
   }
 
   // 4. Aspect Ratio Fidelity (0 to 1) - weight 0.15
@@ -302,6 +312,8 @@ export function scoreLayout(
     maxPhotoArea: Math.round(maxPhotoArea),
     medianPhotoArea: Math.round(medianPhotoArea),
     meanPhotoArea: Math.round(meanPhotoArea),
+    minScaleFactor: Math.round(minScaleFactor * 100) / 100,
+    maxScaleFactor: Math.round(maxScaleFactor * 100) / 100,
     sizeRatio: Math.round(sizeRatio * 10) / 10,
     minDimension: Math.round(minDimension),
     p10Area: Math.round(p10Area),
