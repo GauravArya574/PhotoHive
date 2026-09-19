@@ -162,19 +162,18 @@ export function scoreLayout(
   const areaDeviations = photoAreas.map(a => Math.abs(a - targetAvgArea) / targetAvgArea);
   const meanRelDev = areaDeviations.reduce((sum, d) => sum + d, 0) / count;
 
-  // 1. Extreme Size Ratio Penalty & Uniform Mode Scale Factor Lock [0.70x, 1.30x]
+  // 1. Extreme Size Ratio Penalty & Uniform Mode Scale Factor Check
   let maxAllowedRatio = 3.8; // medium default
-  if (settings.sizeVariation === 'low') maxAllowedRatio = 1.86; // 1.30 / 0.70 = 1.857
+  if (settings.sizeVariation === 'low') maxAllowedRatio = 3.0;
   if (settings.sizeVariation === 'high') maxAllowedRatio = 10.0;
 
   let extremeSizeRatioPenalty = 0;
   if (settings.sizeVariation === 'low') {
-    // Strict penalty for breaking [0.70x, 1.30x]
-    if (minScaleFactor < 0.6999) {
-      extremeSizeRatioPenalty += (0.70 - minScaleFactor) * 150;
+    if (minScaleFactor < 0.55) {
+      extremeSizeRatioPenalty += (0.55 - minScaleFactor) * 80;
     }
-    if (maxScaleFactor > 1.3001) {
-      extremeSizeRatioPenalty += (maxScaleFactor - 1.30) * 150;
+    if (maxScaleFactor > 1.70) {
+      extremeSizeRatioPenalty += (maxScaleFactor - 1.70) * 80;
     }
   } else if (sizeRatio > maxAllowedRatio) {
     const excess = (sizeRatio - maxAllowedRatio) / maxAllowedRatio;
@@ -188,9 +187,9 @@ export function scoreLayout(
   let sizeDistributionScore = 0;
   if (settings.sizeVariation === 'low') {
     const outOfBoundsPenalty =
-      (minScaleFactor < 0.70 ? 0.70 - minScaleFactor : 0) +
-      (maxScaleFactor > 1.30 ? maxScaleFactor - 1.30 : 0);
-    sizeDistributionScore = Math.max(0, 1 - Math.abs(meanRelDev - 0.15) / 0.20 - outOfBoundsPenalty * 50);
+      (minScaleFactor < 0.55 ? 0.55 - minScaleFactor : 0) +
+      (maxScaleFactor > 1.70 ? maxScaleFactor - 1.70 : 0);
+    sizeDistributionScore = Math.max(0, 1 - Math.abs(meanRelDev - 0.15) / 0.25 - outOfBoundsPenalty * 30);
   } else if (settings.sizeVariation === 'medium') {
     const targetDev = 0.18;
     sizeDistributionScore = Math.max(0, 1 - Math.abs(meanRelDev - targetDev) / 0.25);

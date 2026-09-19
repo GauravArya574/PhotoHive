@@ -563,12 +563,12 @@ export function buildBalancedMosaicTree(
   }
 
   const minSFAllowed =
-    settings.sizeVariation === 'low' ? 0.70 : settings.sizeVariation === 'medium' ? 0.40 : 0.20;
+    settings.sizeVariation === 'low' ? 0.55 : settings.sizeVariation === 'medium' ? 0.40 : 0.20;
   const maxSFAllowed =
-    settings.sizeVariation === 'low' ? 1.30 : settings.sizeVariation === 'medium' ? 2.20 : 4.50;
+    settings.sizeVariation === 'low' ? 1.70 : settings.sizeVariation === 'medium' ? 2.20 : 4.50;
 
   const noiseFactor =
-    settings.randomness === 'high' ? 0.20 : settings.randomness === 'medium' ? 0.10 : 0.03;
+    settings.randomness === 'high' ? 0.45 : settings.randomness === 'medium' ? 0.22 : 0.05;
 
   function recurse(
     items: Photo[],
@@ -608,11 +608,12 @@ export function buildBalancedMosaicTree(
         (sf2V < minSFAllowed ? (minSFAllowed - sf2V) * 80 : 0) +
         (sf2V > maxSFAllowed ? (sf2V - maxSFAllowed) * 80 : 0);
 
-      // Anti-striping penalty: discourage repeating the same split direction as parent
-      if (parentDir === 'horizontal') diffH += 0.50;
-      if (parentDir === 'vertical') diffV += 0.50;
+      // Strong anti-striping penalty: heavily favor T-junctions across all modes
+      const repPenalty = settings.randomness === 'high' ? 0.85 : 0.75;
+      if (parentDir === 'horizontal') diffH += repPenalty;
+      if (parentDir === 'vertical') diffV += repPenalty;
 
-      const jitter = (rng.next() - 0.5) * noiseFactor;
+      const jitter = (rng.next() - 0.5) * noiseFactor * 1.5;
       const isH = diffH + penH + jitter <= diffV + penV;
 
       const leaf1: LayoutNode = { type: 'leaf', photo: p1 };
@@ -629,9 +630,51 @@ export function buildBalancedMosaicTree(
     const n = items.length;
     const mid = Math.floor(n / 2);
     const candidateSplits: number[] = [mid];
-    if (n >= 4 && settings.sizeVariation === 'high') {
-      const alt = rng.nextInt(Math.max(1, Math.floor(n * 0.35)), Math.min(n - 1, Math.ceil(n * 0.65)));
-      if (alt !== mid) candidateSplits.push(alt);
+
+    if (n === 3) {
+      candidateSplits.push(1);
+    } else if (n === 4) {
+      const alt4 = rng.nextBool() ? 1 : 3;
+      if (!candidateSplits.includes(alt4)) candidateSplits.push(alt4);
+    } else if (n >= 5) {
+      if (settings.sizeVariation === 'low') {
+        // Uniform mode: evaluate balanced mid-splits plus asymmetric 35-40% cuts.
+        // Every photo maintains expected area canvasArea / N (1.0x scale factor)
+        // while de-synchronizing sibling branch cuts to form true T-junctions.
+        const altA = Math.max(1, Math.round(n * (settings.randomness === 'high' ? 0.33 : 0.38)));
+        const altB = Math.min(n - 1, Math.round(n * (settings.randomness === 'high' ? 0.67 : 0.62)));
+        const chosenAlt = rng.nextBool() ? altA : altB;
+        if (chosenAlt !== mid && !candidateSplits.includes(chosenAlt)) {
+          candidateSplits.push(chosenAlt);
+        }
+        if (settings.randomness === 'high' && n >= 6 && n <= 10) {
+          const secondAlt = chosenAlt === altA ? altB : altA;
+          if (secondAlt !== mid && !candidateSplits.includes(secondAlt)) {
+            candidateSplits.push(secondAlt);
+          }
+        }
+      } else if (settings.sizeVariation === 'medium') {
+        // Balanced mode: introduce asymmetric ratios (33%-38% vs 62%-67%)
+        // Naturally breaks rows and columns while maintaining scale factors [0.40, 2.20]
+        const altA = Math.max(1, Math.round(n * (settings.randomness === 'high' ? 0.33 : 0.38)));
+        const altB = Math.min(n - 1, Math.round(n * (settings.randomness === 'high' ? 0.67 : 0.62)));
+        const chosenAlt = rng.nextBool() ? altA : altB;
+        if (chosenAlt !== mid && !candidateSplits.includes(chosenAlt)) {
+          candidateSplits.push(chosenAlt);
+        }
+        if (settings.randomness === 'high' && n <= 8 && rng.next() < 0.40) {
+          const heroSplit = rng.nextBool() ? 1 : n - 1;
+          if (!candidateSplits.includes(heroSplit)) candidateSplits.push(heroSplit);
+        }
+      } else {
+        // High size variation
+        const alt = rng.nextInt(Math.max(1, Math.floor(n * 0.25)), Math.min(n - 1, Math.ceil(n * 0.75)));
+        if (alt !== mid && !candidateSplits.includes(alt)) candidateSplits.push(alt);
+        if (n <= 10 && rng.next() < 0.50) {
+          const heroSplit = rng.nextBool() ? 1 : n - 1;
+          if (!candidateSplits.includes(heroSplit)) candidateSplits.push(heroSplit);
+        }
+      }
     }
 
     let bestChoice: { node: LayoutNode; cost: number } | null = null;
@@ -642,12 +685,39 @@ export function buildBalancedMosaicTree(
       const f1 = g1.length / n;
       const f2 = g2.length / n;
 
-      // When n > 4, determine preferred cut direction to avoid exponential 2^depth branch explosion
-      const shouldBranchBoth = n <= 4;
-      const preferHorizontal = desiredAspect >= 1.0;
-      const jitterDir = (rng.next() - 0.5) * noiseFactor;
-      const doH = shouldBranchBoth || (preferHorizontal ? 0.6 + jitterDir >= 0.5 : 0.4 + jitterDir >= 0.5);
-      const doV = shouldBranchBoth || !doH;
+      // Evaluate both H and V for small sub-trees (<= 6 items)
+      // For larger sets, intelligently choose preferred direction to de-synchronize sibling branches
+      const shouldBranchBoth = n <= 6;
+      let doH = shouldBranchBoth;
+      let doV = shouldBranchBoth;
+
+      if (!shouldBranchBoth) {
+        if (desiredAspect > 1.85) {
+          doH = true;
+          doV = false;
+        } else if (desiredAspect < 0.55) {
+          doH = false;
+          doV = true;
+        } else {
+          let probH = 0.5;
+          if (parentDir === 'horizontal') {
+            probH = settings.randomness === 'high' ? 0.42 : settings.randomness === 'medium' ? 0.30 : 0.18;
+          } else if (parentDir === 'vertical') {
+            probH = settings.randomness === 'high' ? 0.58 : settings.randomness === 'medium' ? 0.70 : 0.82;
+          } else {
+            probH = desiredAspect >= 1.0 ? 0.60 : 0.40;
+          }
+          const jitter = (rng.next() - 0.5) * noiseFactor;
+          const chooseH = probH + jitter >= 0.5;
+          doH = chooseH;
+          doV = !chooseH;
+        }
+      }
+
+      const areaMismatchWeight =
+        settings.sizeVariation === 'low' ? 1.2 : settings.sizeVariation === 'medium' ? 0.8 : 0.15;
+      const repPenaltyWeight =
+        settings.randomness === 'high' ? 0.85 : 0.75;
 
       let costH = Infinity;
       let costV = Infinity;
@@ -671,9 +741,9 @@ export function buildBalancedMosaicTree(
         if (sf1H > maxSFAllowed) penH += (sf1H - maxSFAllowed) * 80;
         if (sf2H < minSFAllowed) penH += (minSFAllowed - sf2H) * 80;
         if (sf2H > maxSFAllowed) penH += (sf2H - maxSFAllowed) * 80;
-        const repPenaltyH = parentDir === 'horizontal' ? 0.40 : 0;
-        const jitterH = (rng.next() - 0.5) * noiseFactor;
-        costH = aspectDiffH * 2.5 + areaMismatchH * 3.5 + penH + repPenaltyH + jitterH;
+        const repPenaltyH = parentDir === 'horizontal' ? repPenaltyWeight : 0;
+        const jitterH = (rng.next() - 0.5) * noiseFactor * 1.5;
+        costH = aspectDiffH * 2.5 + areaMismatchH * areaMismatchWeight + penH + repPenaltyH + jitterH;
       }
 
       if (doV) {
@@ -694,9 +764,9 @@ export function buildBalancedMosaicTree(
         if (sf1V > maxSFAllowed) penV += (sf1V - maxSFAllowed) * 80;
         if (sf2V < minSFAllowed) penV += (minSFAllowed - sf2V) * 80;
         if (sf2V > maxSFAllowed) penV += (sf2V - maxSFAllowed) * 80;
-        const repPenaltyV = parentDir === 'vertical' ? 0.40 : 0;
-        const jitterV = (rng.next() - 0.5) * noiseFactor;
-        costV = aspectDiffV * 2.5 + areaMismatchV * 3.5 + penV + repPenaltyV + jitterV;
+        const repPenaltyV = parentDir === 'vertical' ? repPenaltyWeight : 0;
+        const jitterV = (rng.next() - 0.5) * noiseFactor * 1.5;
+        costV = aspectDiffV * 2.5 + areaMismatchV * areaMismatchWeight + penV + repPenaltyV + jitterV;
       }
 
       const isH = costH <= costV;
@@ -720,7 +790,7 @@ export function buildBalancedMosaicTree(
 
   // Generate candidates and filter for scale factor, coverage, and distortion compliance
   const numOrderings =
-    settings.randomness === 'high' ? 3 : settings.randomness === 'medium' ? 2 : 1;
+    settings.randomness === 'high' ? 4 : settings.randomness === 'medium' ? 3 : 2;
   let bestCompliantRoot: LayoutNode | null = null;
   let bestCompliantScore = -Infinity;
   let fallbackRoot: LayoutNode | null = null;
@@ -731,7 +801,9 @@ export function buildBalancedMosaicTree(
   const targetAvgArea = (canvasW * canvasH) / photos.length;
 
   for (let ordIdx = 0; ordIdx < numOrderings; ordIdx++) {
-    const shuffled = ordIdx === 0 ? photos : rng.shuffle(photos);
+    const shuffled = ordIdx === 0
+      ? (settings.randomness === 'low' ? photos : rng.shuffle(photos))
+      : rng.shuffle(photos);
     const root = recurse(shuffled, targetAspect, null, 0);
     const pl = layoutNodeToPlacements(root, 0, 0, canvasW, canvasH, settings.spacing, [], false);
 
@@ -756,9 +828,9 @@ export function buildBalancedMosaicTree(
     const cov = Math.min(1, Math.max(0, coveredArea / (canvasW * canvasH)));
     const compliant =
       cov >= 0.959 &&
-      minSF >= minSFAllowed - 0.005 &&
-      maxSF <= maxSFAllowed + 0.005 &&
-      maxDistort <= 0.08;
+      minSF >= minSFAllowed - 0.01 &&
+      maxSF <= maxSFAllowed + 0.01 &&
+      maxDistort <= 0.10;
 
     // Score layout: balance, aspect fidelity, coverage, stochastic jitter
     const ar = getNodeAspectRatio(root);

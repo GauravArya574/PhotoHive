@@ -3,7 +3,6 @@ import { SeededRNG } from './random';
 import { scoreLayout } from './scoring';
 import {
   buildBalancedMosaicTree,
-  solveStrictUniformLayout,
   layoutNodeToPlacements,
 } from './packing';
 
@@ -81,21 +80,21 @@ function isCandidateCompliant(
 
   const minSFAllowed =
     settings.sizeVariation === 'low'
-      ? 0.70
+      ? 0.55
       : settings.sizeVariation === 'medium'
       ? 0.40
       : 0.20;
 
   const maxSFAllowed =
     settings.sizeVariation === 'low'
-      ? 1.30
+      ? 1.70
       : settings.sizeVariation === 'medium'
       ? 2.20
       : 4.50;
 
   const minCoverageAllowed = 0.959; // >= 96.0% coverage
 
-  // In low variation mode, enforce 0.70x to 1.30x scale factor limits
+  // Scale factor limits
   if (scoreObj.minScaleFactor < minSFAllowed - 0.005) return false;
   if (scoreObj.maxScaleFactor > maxSFAllowed + 0.005) return false;
   if (scoreObj.coverage < minCoverageAllowed) return false;
@@ -119,7 +118,7 @@ function isCandidateCompliant(
       return false;
     }
     const currentRatio = p.width / Math.max(1, p.height);
-    if (Math.abs(currentRatio - p.aspectRatio) / p.aspectRatio > 0.08) {
+    if (Math.abs(currentRatio - p.aspectRatio) / p.aspectRatio > 0.10) {
       return false;
     }
   }
@@ -138,19 +137,6 @@ function generateSingleCandidate(
   canvasHeight: number,
   rng: SeededRNG
 ): Placement[] {
-  if (settings.sizeVariation === 'low') {
-    const uniformPlacements = solveStrictUniformLayout(
-      photos,
-      canvasWidth,
-      canvasHeight,
-      settings.spacing,
-      rng
-    );
-    if (uniformPlacements && uniformPlacements.length === photos.length) {
-      return uniformPlacements;
-    }
-  }
-
   const tree = buildBalancedMosaicTree(photos, targetAspect, rng, settings);
   return layoutNodeToPlacements(
     tree,
@@ -315,17 +301,6 @@ export async function generateCollageLayout(
   if (bestCompliantPlacements.length > 0 && bestCompliantScoreObj) {
     finalPlacements = bestCompliantPlacements;
     finalScoreObj = bestCompliantScoreObj;
-  } else if (settings.sizeVariation === 'low') {
-    const fallbackRNG = new SeededRNG(settings.seed);
-    const uniformPlacements = solveStrictUniformLayout(
-      photos,
-      canvasWidth,
-      canvasHeight,
-      settings.spacing,
-      fallbackRNG
-    );
-    finalPlacements = uniformPlacements;
-    finalScoreObj = scoreLayout(uniformPlacements, canvasWidth, canvasHeight, settings);
   } else if (bestAnyPlacements.length > 0 && bestAnyScoreObj) {
     finalPlacements = bestAnyPlacements;
     finalScoreObj = bestAnyScoreObj;
