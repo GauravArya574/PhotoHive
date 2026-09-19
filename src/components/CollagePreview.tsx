@@ -58,6 +58,18 @@ export const CollagePreview: React.FC<CollagePreviewProps> = ({
   const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [startPan, setStartPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [showHeavyLoader, setShowHeavyLoader] = useState(false);
+
+  useEffect(() => {
+    if (!isGenerating) {
+      setShowHeavyLoader(false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setShowHeavyLoader(true);
+    }, 160);
+    return () => clearTimeout(timer);
+  }, [isGenerating]);
 
   // Fast photo lookup map
   const photosMap = React.useMemo(() => {
@@ -250,8 +262,18 @@ export const CollagePreview: React.FC<CollagePreviewProps> = ({
         </div>
       )}
 
-      {/* Generation Progress Overlay */}
+      {/* Live Minimal Progress Bar (non-blocking, zero flicker) */}
       {isGenerating && (
+        <div className="absolute top-0 left-0 right-0 h-1 bg-amber-500/20 overflow-hidden z-30 pointer-events-none">
+          <div
+            className="h-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-75"
+            style={{ width: `${generationProgress}%` }}
+          />
+        </div>
+      )}
+
+      {/* Generation Progress Modal (shown only if layout calculation exceeds 160ms) */}
+      {showHeavyLoader && (
         <div className="absolute inset-0 bg-black/70 backdrop-blur-xs flex flex-col items-center justify-center z-40">
           <div className="bg-[#181922] border border-[#2d2f3d] p-6 rounded-2xl shadow-2xl max-w-sm w-full mx-4 text-center">
             <div className="h-12 w-12 mx-auto rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center mb-3 animate-spin">

@@ -201,17 +201,11 @@ export async function generateCollageLayout(
   const targetAspect = canvasWidth / canvasHeight;
   const count = photos.length;
 
-  let candidateCount = 28;
+  let candidateCount = 10;
   if (settings.sizeVariation === 'low') {
-    if (count <= 30) candidateCount = 48;
-    else if (count <= 90) candidateCount = 36;
-    else if (count <= 200) candidateCount = 24;
-    else candidateCount = 16;
+    candidateCount = count <= 30 ? 10 : 8;
   } else {
-    if (count <= 25) candidateCount = 32;
-    else if (count <= 80) candidateCount = 20;
-    else if (count <= 200) candidateCount = 14;
-    else candidateCount = 10;
+    candidateCount = count <= 30 ? 12 : 8;
   }
 
   let bestCompliantPlacements: Placement[] = [];
@@ -224,7 +218,7 @@ export async function generateCollageLayout(
 
   // Phase 1: Iterative stochastic candidate search (non-blocking)
   for (let c = 0; c < candidateCount; c++) {
-    // Yield to browser event loop on every candidate to keep the UI smooth and update progress
+    // Yield to browser event loop
     await new Promise(resolve => setTimeout(resolve, 0));
 
     const iterSeed = (settings.seed + c * 7919 + c * 31) >>> 0;
@@ -250,6 +244,11 @@ export async function generateCollageLayout(
           bestCompliantPlacements = candidatePlacements;
           bestCompliantScoreObj = scoreObj;
         }
+        // Early exit if high quality compliant layout found
+        if (c >= 2 && scoreObj.coverage >= 0.98 && scoreObj.aspectRatioFidelity >= 0.96) {
+          if (onProgress) onProgress(85, c + 1);
+          break;
+        }
       } else {
         if (scoreObj.totalScore > bestAnyScore) {
           bestAnyScore = scoreObj.totalScore;
@@ -267,7 +266,7 @@ export async function generateCollageLayout(
 
   // Phase 2: If no compliant candidate found yet, search with additional varied seeds
   if (bestCompliantPlacements.length === 0) {
-    const extraAttempts = 20;
+    const extraAttempts = 5;
     for (let extra = 0; extra < extraAttempts; extra++) {
       // Yield to event loop
       await new Promise(resolve => setTimeout(resolve, 0));
@@ -295,6 +294,7 @@ export async function generateCollageLayout(
             bestCompliantPlacements = candidatePlacements;
             bestCompliantScoreObj = scoreObj;
           }
+          break; // Stop as soon as compliant candidate found
         } else if (scoreObj.totalScore > bestAnyScore) {
           bestAnyScore = scoreObj.totalScore;
           bestAnyPlacements = candidatePlacements;
@@ -304,11 +304,6 @@ export async function generateCollageLayout(
 
       if (onProgress) {
         onProgress(80 + Math.round(((extra + 1) / extraAttempts) * 18), candidateCount + extra + 1);
-      }
-
-      // If we found a high quality compliant candidate, we can complete
-      if (bestCompliantPlacements.length > 0 && extra >= 3) {
-        break;
       }
     }
   }

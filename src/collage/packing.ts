@@ -627,22 +627,11 @@ export function buildBalancedMosaicTree(
     }
 
     const n = items.length;
-    // Test candidate splits
-    const candidateSplits: number[] = [Math.floor(n / 2)];
-    if (settings.sizeVariation === 'low') {
-      if (n >= 5 && Math.ceil(n / 2) !== candidateSplits[0]) candidateSplits.push(Math.ceil(n / 2));
-    } else if (settings.sizeVariation === 'medium') {
-      if (n >= 4) {
-        const alt = rng.nextBool()
-          ? Math.max(1, Math.floor(n * 0.40))
-          : Math.min(n - 1, Math.ceil(n * 0.60));
-        if (alt !== candidateSplits[0]) candidateSplits.push(alt);
-      }
-    } else {
-      if (n >= 3) {
-        const alt = rng.nextInt(Math.max(1, Math.floor(n * 0.30)), Math.min(n - 1, Math.ceil(n * 0.70)));
-        if (alt !== candidateSplits[0]) candidateSplits.push(alt);
-      }
+    const mid = Math.floor(n / 2);
+    const candidateSplits: number[] = [mid];
+    if (n >= 4 && settings.sizeVariation === 'high') {
+      const alt = rng.nextInt(Math.max(1, Math.floor(n * 0.35)), Math.min(n - 1, Math.ceil(n * 0.65)));
+      if (alt !== mid) candidateSplits.push(alt);
     }
 
     let bestChoice: { node: LayoutNode; cost: number } | null = null;
@@ -653,48 +642,62 @@ export function buildBalancedMosaicTree(
       const f1 = g1.length / n;
       const f2 = g2.length / n;
 
-      // Horizontal branch (places children side-by-side, vertical cut)
-      const n1H = recurse(g1, desiredAspect * f1, 'horizontal', depth + 1);
-      const n2H = recurse(g2, desiredAspect * f2, 'horizontal', depth + 1);
-      const ar1H = getNodeAspectRatio(n1H);
-      const ar2H = getNodeAspectRatio(n2H);
-      const combAspectH = ar1H + ar2H;
-      const aspectDiffH = Math.abs(Math.log(combAspectH / desiredAspect));
-      const areaMismatchH = Math.abs(Math.log((ar1H / combAspectH) / f1));
-      const sf1H = (ar1H / combAspectH) / f1;
-      const sf2H = (ar2H / combAspectH) / f2;
-      let penH = 0;
-      if (sf1H < minSFAllowed) penH += (minSFAllowed - sf1H) * 80;
-      if (sf1H > maxSFAllowed) penH += (sf1H - maxSFAllowed) * 80;
-      if (sf2H < minSFAllowed) penH += (minSFAllowed - sf2H) * 80;
-      if (sf2H > maxSFAllowed) penH += (sf2H - maxSFAllowed) * 80;
+      // When n > 4, determine preferred cut direction to avoid exponential 2^depth branch explosion
+      const shouldBranchBoth = n <= 4;
+      const preferHorizontal = desiredAspect >= 1.0;
+      const jitterDir = (rng.next() - 0.5) * noiseFactor;
+      const doH = shouldBranchBoth || (preferHorizontal ? 0.6 + jitterDir >= 0.5 : 0.4 + jitterDir >= 0.5);
+      const doV = shouldBranchBoth || !doH;
 
-      const repPenaltyH = parentDir === 'horizontal' ? 0.60 : 0;
-      const jitterH = (rng.next() - 0.5) * noiseFactor;
-      const costH = aspectDiffH * 2.5 + areaMismatchH * 3.5 + penH + repPenaltyH + jitterH;
+      let costH = Infinity;
+      let costV = Infinity;
+      let n1H: LayoutNode | null = null;
+      let n2H: LayoutNode | null = null;
+      let n1V: LayoutNode | null = null;
+      let n2V: LayoutNode | null = null;
 
-      // Vertical branch (places children stacked top-and-bottom, horizontal cut)
-      const n1V = recurse(g1, desiredAspect / f1, 'vertical', depth + 1);
-      const n2V = recurse(g2, desiredAspect / f2, 'vertical', depth + 1);
-      const ar1V = getNodeAspectRatio(n1V);
-      const ar2V = getNodeAspectRatio(n2V);
-      const inv1V = 1 / Math.max(0.01, ar1V);
-      const inv2V = 1 / Math.max(0.01, ar2V);
-      const invSumV = inv1V + inv2V;
-      const combAspectV = 1 / Math.max(0.01, invSumV);
-      const aspectDiffV = Math.abs(Math.log(combAspectV / desiredAspect));
-      const areaMismatchV = Math.abs(Math.log((inv1V / invSumV) / f1));
-      const sf1V = (inv1V / invSumV) / f1;
-      const sf2V = (inv2V / invSumV) / f2;
-      let penV = 0;
-      if (sf1V < minSFAllowed) penV += (minSFAllowed - sf1V) * 80;
-      if (sf1V > maxSFAllowed) penV += (sf1V - maxSFAllowed) * 80;
-      if (sf2V < minSFAllowed) penV += (minSFAllowed - sf2V) * 80;
-      if (sf2V > maxSFAllowed) penV += (sf2V - maxSFAllowed) * 80;
+      if (doH) {
+        n1H = recurse(g1, desiredAspect * f1, 'horizontal', depth + 1);
+        n2H = recurse(g2, desiredAspect * f2, 'horizontal', depth + 1);
+        const ar1H = getNodeAspectRatio(n1H);
+        const ar2H = getNodeAspectRatio(n2H);
+        const combAspectH = ar1H + ar2H;
+        const aspectDiffH = Math.abs(Math.log(combAspectH / desiredAspect));
+        const areaMismatchH = Math.abs(Math.log((ar1H / combAspectH) / f1));
+        const sf1H = (ar1H / combAspectH) / f1;
+        const sf2H = (ar2H / combAspectH) / f2;
+        let penH = 0;
+        if (sf1H < minSFAllowed) penH += (minSFAllowed - sf1H) * 80;
+        if (sf1H > maxSFAllowed) penH += (sf1H - maxSFAllowed) * 80;
+        if (sf2H < minSFAllowed) penH += (minSFAllowed - sf2H) * 80;
+        if (sf2H > maxSFAllowed) penH += (sf2H - maxSFAllowed) * 80;
+        const repPenaltyH = parentDir === 'horizontal' ? 0.40 : 0;
+        const jitterH = (rng.next() - 0.5) * noiseFactor;
+        costH = aspectDiffH * 2.5 + areaMismatchH * 3.5 + penH + repPenaltyH + jitterH;
+      }
 
-      const repPenaltyV = parentDir === 'vertical' ? 0.60 : 0;
-      const jitterV = (rng.next() - 0.5) * noiseFactor;
-      const costV = aspectDiffV * 2.5 + areaMismatchV * 3.5 + penV + repPenaltyV + jitterV;
+      if (doV) {
+        n1V = recurse(g1, desiredAspect / f1, 'vertical', depth + 1);
+        n2V = recurse(g2, desiredAspect / f2, 'vertical', depth + 1);
+        const ar1V = getNodeAspectRatio(n1V);
+        const ar2V = getNodeAspectRatio(n2V);
+        const inv1V = 1 / Math.max(0.01, ar1V);
+        const inv2V = 1 / Math.max(0.01, ar2V);
+        const invSumV = inv1V + inv2V;
+        const combAspectV = 1 / Math.max(0.01, invSumV);
+        const aspectDiffV = Math.abs(Math.log(combAspectV / desiredAspect));
+        const areaMismatchV = Math.abs(Math.log((inv1V / invSumV) / f1));
+        const sf1V = (inv1V / invSumV) / f1;
+        const sf2V = (inv2V / invSumV) / f2;
+        let penV = 0;
+        if (sf1V < minSFAllowed) penV += (minSFAllowed - sf1V) * 80;
+        if (sf1V > maxSFAllowed) penV += (sf1V - maxSFAllowed) * 80;
+        if (sf2V < minSFAllowed) penV += (minSFAllowed - sf2V) * 80;
+        if (sf2V > maxSFAllowed) penV += (sf2V - maxSFAllowed) * 80;
+        const repPenaltyV = parentDir === 'vertical' ? 0.40 : 0;
+        const jitterV = (rng.next() - 0.5) * noiseFactor;
+        costV = aspectDiffV * 2.5 + areaMismatchV * 3.5 + penV + repPenaltyV + jitterV;
+      }
 
       const isH = costH <= costV;
       const minCost = isH ? costH : costV;
@@ -704,8 +707,8 @@ export function buildBalancedMosaicTree(
           node: {
             type: isH ? 'horizontal' : 'vertical',
             children: isH
-              ? (rng.nextBool() ? [n1H, n2H] : [n2H, n1H])
-              : (rng.nextBool() ? [n1V, n2V] : [n2V, n1V]),
+              ? (rng.nextBool() ? [n1H!, n2H!] : [n2H!, n1H!])
+              : (rng.nextBool() ? [n1V!, n2V!] : [n2V!, n1V!]),
           },
           cost: minCost,
         };
@@ -717,7 +720,7 @@ export function buildBalancedMosaicTree(
 
   // Generate candidates and filter for scale factor, coverage, and distortion compliance
   const numOrderings =
-    settings.randomness === 'high' ? 16 : settings.randomness === 'medium' ? 10 : 6;
+    settings.randomness === 'high' ? 3 : settings.randomness === 'medium' ? 2 : 1;
   let bestCompliantRoot: LayoutNode | null = null;
   let bestCompliantScore = -Infinity;
   let fallbackRoot: LayoutNode | null = null;
@@ -728,7 +731,7 @@ export function buildBalancedMosaicTree(
   const targetAvgArea = (canvasW * canvasH) / photos.length;
 
   for (let ordIdx = 0; ordIdx < numOrderings; ordIdx++) {
-    const shuffled = rng.shuffle(photos);
+    const shuffled = ordIdx === 0 ? photos : rng.shuffle(photos);
     const root = recurse(shuffled, targetAspect, null, 0);
     const pl = layoutNodeToPlacements(root, 0, 0, canvasW, canvasH, settings.spacing, [], false);
 
@@ -766,6 +769,7 @@ export function buildBalancedMosaicTree(
     if (compliant && score > bestCompliantScore) {
       bestCompliantScore = score;
       bestCompliantRoot = root;
+      if (cov >= 0.98) break; // Early exit on high-quality compliant tree
     }
     if (score > fallbackScore) {
       fallbackScore = score;
@@ -778,9 +782,8 @@ export function buildBalancedMosaicTree(
 
 /**
  * Exact Uniform Mode Solver:
- * Searches across Row counts R, Column counts C, aspect-sorted chunkings,
- * aspect-ratio power-proportional assignments, dynamic programming cut points,
- * and iterative hill-climbing swaps to find a layout that strictly satisfies:
+ * Fast, vector-optimized analytical search across Row counts R, Column counts C,
+ * aspect-sorted chunkings, and hill-climbing swaps to find a layout that strictly satisfies:
  * 1) 0.70 <= minScaleFactor <= maxScaleFactor <= 1.30 (relative to canvasArea / N)
  * 2) coverage >= 0.96 (96.0%+)
  * 3) exact aspect ratio fidelity (0% crop, 0% stretch)
@@ -813,175 +816,106 @@ export function solveStrictUniformLayout(
     return [{ photoId: p.id, x, y, width: w, height: h, aspectRatio: p.aspectRatio }];
   }
 
-  const canvasArea = canvasWidth * canvasHeight;
-  const targetAvgArea = canvasArea / N;
-  const canvasAspect = canvasWidth / canvasHeight;
-
-  let bestPlacements: Placement[] | null = null;
-  let bestCoverage = -1;
-  let bestScore = -Infinity;
-
-  // Helper to convert rows to placements and evaluate metrics
-  function evaluateRows(activeRows: Photo[][]): { placements: Placement[]; minSF: number; maxSF: number; cov: number; maxDistort: number; isCompliant: boolean } | null {
-    if (activeRows.some(r => r.length === 0)) return null;
-
-    const rowAspectSums = activeRows.map(r => r.reduce((sum, p) => sum + p.aspectRatio, 0));
-    const relHeights = rowAspectSums.map(s => (s > 0 ? 1.0 / s : 1.0));
-    const totalRelH = relHeights.reduce((sum, h) => sum + h, 0);
-    const blockAspect = totalRelH > 0 ? 1.0 / totalRelH : 1.0;
-
-    const blockW = canvasWidth;
-    const blockH = canvasHeight;
-    const startX = 0;
-    const startY = 0;
-
-    const candidatePlacements: Placement[] = [];
-    let curY = startY;
-    for (let r = 0; r < activeRows.length; r++) {
+  // Fast analytical evaluation of row partition without allocating placement objects
+  function fastEvalRows(activeRows: Photo[][]): { minSF: number; maxSF: number; cov: number; maxDistort: number; isCompliant: boolean } | null {
+    const R = activeRows.length;
+    if (R === 0) return null;
+    let totalRelH = 0;
+    for (let r = 0; r < R; r++) {
       const row = activeRows[r];
-      const rowSum = rowAspectSums[r];
-      const nextY = (r === activeRows.length - 1)
-        ? startY + blockH
-        : Math.round(startY + (blockH * (relHeights.slice(0, r + 1).reduce((a, b) => a + b, 0) / totalRelH)));
-      const rh = Math.max(1, nextY - curY);
+      if (row.length === 0) return null;
+      let s = 0;
+      for (let i = 0; i < row.length; i++) s += row[i].aspectRatio;
+      if (s <= 0) return null;
+      totalRelH += 1.0 / s;
+    }
+    if (totalRelH <= 0) return null;
 
-      let curX = startX;
-      let cumAspect = 0;
+    const K = N / totalRelH;
+    let minSF = Infinity;
+    let maxSF = -Infinity;
 
+    for (let r = 0; r < R; r++) {
+      const row = activeRows[r];
+      let s = 0;
+      let minA = Infinity;
+      let maxA = -Infinity;
       for (let i = 0; i < row.length; i++) {
-        const p = row[i];
-        cumAspect += p.aspectRatio;
-        const nextX = (i === row.length - 1)
-          ? startX + blockW
-          : Math.round(startX + (blockW * (cumAspect / rowSum)));
-        const pw = Math.max(1, nextX - curX);
-
-        const pad = spacing > 0 ? spacing / 2 : 0;
-        candidatePlacements.push({
-          photoId: p.id,
-          x: Math.round(curX + pad),
-          y: Math.round(curY + pad),
-          width: Math.max(1, Math.round(pw - spacing)),
-          height: Math.max(1, Math.round(rh - spacing)),
-          aspectRatio: p.aspectRatio,
-        });
-        curX = nextX;
+        const ar = row[i].aspectRatio;
+        s += ar;
+        if (ar < minA) minA = ar;
+        if (ar > maxA) maxA = ar;
       }
-      curY = nextY;
+      const Fr = K / (s * s);
+      const rowMinSF = Fr * minA;
+      const rowMaxSF = Fr * maxA;
+      if (rowMinSF < minSF) minSF = rowMinSF;
+      if (rowMaxSF > maxSF) maxSF = rowMaxSF;
     }
 
-    const coveredArea = candidatePlacements.reduce((sum, p) => {
-      const cellW = spacing > 0 ? p.width + spacing : p.width;
-      const cellH = spacing > 0 ? p.height + spacing : p.height;
-      return sum + cellW * cellH;
-    }, 0);
-    const cov = Math.min(1, Math.max(0, coveredArea / canvasArea));
-
-    let minSF = Infinity;
-    let maxSF = -Infinity;
-    let maxDistort = 0;
-    for (const p of candidatePlacements) {
-      const cellW = spacing > 0 ? p.width + spacing : p.width;
-      const cellH = spacing > 0 ? p.height + spacing : p.height;
-      const sf = (cellW * cellH) / targetAvgArea;
-      if (sf < minSF) minSF = sf;
-      if (sf > maxSF) maxSF = sf;
-      const curRatio = p.width / Math.max(1, p.height);
-      const dist = Math.abs(curRatio - p.aspectRatio) / p.aspectRatio;
-      if (dist > maxDistort) maxDistort = dist;
-    }
-
-    const isCompliant = cov >= 0.9599 && minSF >= 0.6999 && maxSF <= 1.3001 && maxDistort <= 0.0801;
-    return { placements: candidatePlacements, minSF, maxSF, cov, maxDistort, isCompliant };
+    const maxDistort = Math.abs((canvasWidth / canvasHeight) * totalRelH - 1);
+    const cov = 1.0;
+    const isCompliant = minSF >= 0.6999 && maxSF <= 1.3001 && maxDistort <= 0.0801;
+    return { minSF, maxSF, cov, maxDistort, isCompliant };
   }
 
-  // Helper to convert cols to placements and evaluate metrics
-  function evaluateCols(activeCols: Photo[][]): { placements: Placement[]; minSF: number; maxSF: number; cov: number; maxDistort: number; isCompliant: boolean } | null {
-    if (activeCols.some(c => c.length === 0)) return null;
-
-    const colInvAspectSums = activeCols.map(c => c.reduce((sum, p) => sum + 1 / p.aspectRatio, 0));
-    const relWidths = colInvAspectSums.map(s => (s > 0 ? 1.0 / s : 1.0));
-    const totalRelW = relWidths.reduce((sum, w) => sum + w, 0);
-
-    const blockW = canvasWidth;
-    const blockH = canvasHeight;
-    const startX = 0;
-    const startY = 0;
-
-    const candidatePlacements: Placement[] = [];
-    let curX = startX;
-    for (let c = 0; c < activeCols.length; c++) {
+  // Fast analytical evaluation of col partition without allocating placement objects
+  function fastEvalCols(activeCols: Photo[][]): { minSF: number; maxSF: number; cov: number; maxDistort: number; isCompliant: boolean } | null {
+    const C = activeCols.length;
+    if (C === 0) return null;
+    let totalRelW = 0;
+    for (let c = 0; c < C; c++) {
       const col = activeCols[c];
-      const colInvSum = colInvAspectSums[c];
-      const nextX = (c === activeCols.length - 1)
-        ? startX + blockW
-        : Math.round(startX + (blockW * (relWidths.slice(0, c + 1).reduce((a, b) => a + b, 0) / totalRelW)));
-      const cw = Math.max(1, nextX - curX);
-
-      let curY = startY;
-      let cumInvAspect = 0;
-
-      for (let pIdx = 0; pIdx < col.length; pIdx++) {
-        const p = col[pIdx];
-        cumInvAspect += 1 / p.aspectRatio;
-        const nextY = (pIdx === col.length - 1)
-          ? startY + blockH
-          : Math.round(startY + (blockH * (cumInvAspect / colInvSum)));
-        const ph = Math.max(1, nextY - curY);
-
-        const pad = spacing > 0 ? spacing / 2 : 0;
-        candidatePlacements.push({
-          photoId: p.id,
-          x: Math.round(curX + pad),
-          y: Math.round(curY + pad),
-          width: Math.max(1, Math.round(cw - spacing)),
-          height: Math.max(1, Math.round(ph - spacing)),
-          aspectRatio: p.aspectRatio,
-        });
-        curY = nextY;
-      }
-      curX = nextX;
+      if (col.length === 0) return null;
+      let s = 0;
+      for (let i = 0; i < col.length; i++) s += 1.0 / col[i].aspectRatio;
+      if (s <= 0) return null;
+      totalRelW += 1.0 / s;
     }
+    if (totalRelW <= 0) return null;
 
-    const coveredArea = candidatePlacements.reduce((sum, p) => {
-      const cellW = spacing > 0 ? p.width + spacing : p.width;
-      const cellH = spacing > 0 ? p.height + spacing : p.height;
-      return sum + cellW * cellH;
-    }, 0);
-    const cov = Math.min(1, Math.max(0, coveredArea / canvasArea));
-
+    const K = N / totalRelW;
     let minSF = Infinity;
     let maxSF = -Infinity;
-    let maxDistort = 0;
-    for (const p of candidatePlacements) {
-      const cellW = spacing > 0 ? p.width + spacing : p.width;
-      const cellH = spacing > 0 ? p.height + spacing : p.height;
-      const sf = (cellW * cellH) / targetAvgArea;
-      if (sf < minSF) minSF = sf;
-      if (sf > maxSF) maxSF = sf;
-      const curRatio = p.width / Math.max(1, p.height);
-      const dist = Math.abs(curRatio - p.aspectRatio) / p.aspectRatio;
-      if (dist > maxDistort) maxDistort = dist;
+
+    for (let c = 0; c < C; c++) {
+      const col = activeCols[c];
+      let s = 0;
+      let minInvA = Infinity;
+      let maxInvA = -Infinity;
+      for (let i = 0; i < col.length; i++) {
+        const invA = 1.0 / col[i].aspectRatio;
+        s += invA;
+        if (invA < minInvA) minInvA = invA;
+        if (invA > maxInvA) maxInvA = invA;
+      }
+      const Fc = K / (s * s);
+      const colMinSF = Fc * minInvA;
+      const colMaxSF = Fc * maxInvA;
+      if (colMinSF < minSF) minSF = colMinSF;
+      if (colMaxSF > maxSF) maxSF = colMaxSF;
     }
 
-    const isCompliant = cov >= 0.9599 && minSF >= 0.6999 && maxSF <= 1.3001 && maxDistort <= 0.0801;
-    return { placements: candidatePlacements, minSF, maxSF, cov, maxDistort, isCompliant };
+    const maxDistort = Math.abs((canvasHeight / canvasWidth) * totalRelW - 1);
+    const cov = 1.0;
+    const isCompliant = minSF >= 0.6999 && maxSF <= 1.3001 && maxDistort <= 0.0801;
+    return { minSF, maxSF, cov, maxDistort, isCompliant };
   }
 
-  // Hill-climbing optimizer for a row partition
+  // Fast in-place hill-climbing optimizer for row partition
   function optimizeRows(initialRows: Photo[][]): Photo[][] {
-    let currentRows = initialRows.map(r => [...r]);
-    let currentEval = evaluateRows(currentRows);
-    if (!currentEval) return initialRows;
-    if (currentEval.isCompliant) return currentRows;
+    const currentRows = initialRows.map(r => [...r]);
+    const initEval = fastEvalRows(currentRows);
+    if (!initEval || initEval.isCompliant) return currentRows;
 
-    const calcViol = (e: { minSF: number; maxSF: number; cov: number; maxDistort: number }) =>
+    const calcViol = (e: { minSF: number; maxSF: number; maxDistort: number }) =>
       (e.minSF < 0.70 ? (0.70 - e.minSF) * 4 : 0) +
       (e.maxSF > 1.30 ? (e.maxSF - 1.30) * 4 : 0) +
-      (e.cov < 0.96 ? (0.96 - e.cov) * 10 : 0) +
       (e.maxDistort > 0.08 ? (e.maxDistort - 0.08) * 5 : 0);
 
-    for (let iter = 0; iter < 40; iter++) {
+    let curViol = calcViol(initEval);
+
+    for (let iter = 0; iter < 10; iter++) {
       let improved = false;
       const R = currentRows.length;
 
@@ -992,22 +926,22 @@ export function solveStrictUniformLayout(
           const photoToMove = currentRows[r1][pIdx];
           for (let r2 = 0; r2 < R; r2++) {
             if (r1 === r2) continue;
-            const newRows = currentRows.map(r => [...r]);
-            newRows[r1].splice(pIdx, 1);
-            newRows[r2].push(photoToMove);
+            currentRows[r1].splice(pIdx, 1);
+            currentRows[r2].push(photoToMove);
 
-            const res = evaluateRows(newRows);
+            const res = fastEvalRows(currentRows);
             if (res) {
-              const curViol = calcViol(currentEval);
               const newViol = calcViol(res);
-
               if (newViol < curViol - 0.0005) {
-                currentRows = newRows;
-                currentEval = res;
+                curViol = newViol;
                 improved = true;
+                if (res.isCompliant) return currentRows;
                 break;
               }
             }
+            // Revert move
+            currentRows[r2].pop();
+            currentRows[r1].splice(pIdx, 0, photoToMove);
           }
           if (improved) break;
         }
@@ -1020,22 +954,23 @@ export function solveStrictUniformLayout(
           for (let i1 = 0; i1 < currentRows[r1].length; i1++) {
             for (let r2 = r1 + 1; r2 < R; r2++) {
               for (let i2 = 0; i2 < currentRows[r2].length; i2++) {
-                const newRows = currentRows.map(r => [...r]);
-                const tmp = newRows[r1][i1];
-                newRows[r1][i1] = newRows[r2][i2];
-                newRows[r2][i2] = tmp;
+                const tmp = currentRows[r1][i1];
+                currentRows[r1][i1] = currentRows[r2][i2];
+                currentRows[r2][i2] = tmp;
 
-                const res = evaluateRows(newRows);
+                const res = fastEvalRows(currentRows);
                 if (res) {
-                  const curViol = calcViol(currentEval);
                   const newViol = calcViol(res);
                   if (newViol < curViol - 0.0005) {
-                    currentRows = newRows;
-                    currentEval = res;
+                    curViol = newViol;
                     improved = true;
+                    if (res.isCompliant) return currentRows;
                     break;
                   }
                 }
+                // Revert swap
+                currentRows[r2][i2] = currentRows[r1][i1];
+                currentRows[r1][i1] = tmp;
               }
               if (improved) break;
             }
@@ -1046,25 +981,24 @@ export function solveStrictUniformLayout(
       }
 
       if (!improved) break;
-      if (currentEval.isCompliant) break;
     }
     return currentRows;
   }
 
-  // Hill-climbing optimizer for a column partition
+  // Fast in-place hill-climbing optimizer for col partition
   function optimizeCols(initialCols: Photo[][]): Photo[][] {
-    let currentCols = initialCols.map(c => [...c]);
-    let currentEval = evaluateCols(currentCols);
-    if (!currentEval) return initialCols;
-    if (currentEval.isCompliant) return currentCols;
+    const currentCols = initialCols.map(c => [...c]);
+    const initEval = fastEvalCols(currentCols);
+    if (!initEval || initEval.isCompliant) return currentCols;
 
-    const calcViol = (e: { minSF: number; maxSF: number; cov: number; maxDistort: number }) =>
+    const calcViol = (e: { minSF: number; maxSF: number; maxDistort: number }) =>
       (e.minSF < 0.70 ? (0.70 - e.minSF) * 4 : 0) +
       (e.maxSF > 1.30 ? (e.maxSF - 1.30) * 4 : 0) +
-      (e.cov < 0.96 ? (0.96 - e.cov) * 10 : 0) +
       (e.maxDistort > 0.08 ? (e.maxDistort - 0.08) * 5 : 0);
 
-    for (let iter = 0; iter < 40; iter++) {
+    let curViol = calcViol(initEval);
+
+    for (let iter = 0; iter < 10; iter++) {
       let improved = false;
       const C = currentCols.length;
 
@@ -1075,22 +1009,21 @@ export function solveStrictUniformLayout(
           const photoToMove = currentCols[c1][pIdx];
           for (let c2 = 0; c2 < C; c2++) {
             if (c1 === c2) continue;
-            const newCols = currentCols.map(c => [...c]);
-            newCols[c1].splice(pIdx, 1);
-            newCols[c2].push(photoToMove);
+            currentCols[c1].splice(pIdx, 1);
+            currentCols[c2].push(photoToMove);
 
-            const res = evaluateCols(newCols);
+            const res = fastEvalCols(currentCols);
             if (res) {
-              const curViol = calcViol(currentEval);
               const newViol = calcViol(res);
-
               if (newViol < curViol - 0.0005) {
-                currentCols = newCols;
-                currentEval = res;
+                curViol = newViol;
                 improved = true;
+                if (res.isCompliant) return currentCols;
                 break;
               }
             }
+            currentCols[c2].pop();
+            currentCols[c1].splice(pIdx, 0, photoToMove);
           }
           if (improved) break;
         }
@@ -1103,22 +1036,22 @@ export function solveStrictUniformLayout(
           for (let i1 = 0; i1 < currentCols[c1].length; i1++) {
             for (let c2 = c1 + 1; c2 < C; c2++) {
               for (let i2 = 0; i2 < currentCols[c2].length; i2++) {
-                const newCols = currentCols.map(c => [...c]);
-                const tmp = newCols[c1][i1];
-                newCols[c1][i1] = newCols[c2][i2];
-                newCols[c2][i2] = tmp;
+                const tmp = currentCols[c1][i1];
+                currentCols[c1][i1] = currentCols[c2][i2];
+                currentCols[c2][i2] = tmp;
 
-                const res = evaluateCols(newCols);
+                const res = fastEvalCols(currentCols);
                 if (res) {
-                  const curViol = calcViol(currentEval);
                   const newViol = calcViol(res);
                   if (newViol < curViol - 0.0005) {
-                    currentCols = newCols;
-                    currentEval = res;
+                    curViol = newViol;
                     improved = true;
+                    if (res.isCompliant) return currentCols;
                     break;
                   }
                 }
+                currentCols[c2][i2] = currentCols[c1][i1];
+                currentCols[c1][i1] = tmp;
               }
               if (improved) break;
             }
@@ -1129,163 +1062,179 @@ export function solveStrictUniformLayout(
       }
 
       if (!improved) break;
-      if (currentEval.isCompliant) break;
     }
     return currentCols;
   }
 
-  // Generate seed-varied ordering options
+  // Final placement constructor from optimal row configuration
+  function buildFinalRowPlacements(activeRows: Photo[][]): Placement[] {
+    const rowAspectSums = activeRows.map(r => r.reduce((sum, p) => sum + p.aspectRatio, 0));
+    const relHeights = rowAspectSums.map(s => (s > 0 ? 1.0 / s : 1.0));
+    const totalRelH = relHeights.reduce((sum, h) => sum + h, 0);
+
+    const blockW = canvasWidth;
+    const blockH = canvasHeight;
+    const placements: Placement[] = [];
+    let curY = 0;
+
+    for (let r = 0; r < activeRows.length; r++) {
+      const row = activeRows[r];
+      const rowSum = rowAspectSums[r];
+      const nextY = (r === activeRows.length - 1)
+        ? blockH
+        : Math.round(blockH * (relHeights.slice(0, r + 1).reduce((a, b) => a + b, 0) / totalRelH));
+      const rh = Math.max(1, nextY - curY);
+
+      let curX = 0;
+      let cumAspect = 0;
+
+      for (let i = 0; i < row.length; i++) {
+        const p = row[i];
+        cumAspect += p.aspectRatio;
+        const nextX = (i === row.length - 1)
+          ? blockW
+          : Math.round(blockW * (cumAspect / rowSum));
+        const pw = Math.max(1, nextX - curX);
+        const pad = spacing > 0 ? spacing / 2 : 0;
+
+        placements.push({
+          photoId: p.id,
+          x: Math.round(curX + pad),
+          y: Math.round(curY + pad),
+          width: Math.max(1, Math.round(pw - spacing)),
+          height: Math.max(1, Math.round(rh - spacing)),
+          aspectRatio: p.aspectRatio,
+        });
+        curX = nextX;
+      }
+      curY = nextY;
+    }
+    return placements;
+  }
+
+  // Final placement constructor from optimal col configuration
+  function buildFinalColPlacements(activeCols: Photo[][]): Placement[] {
+    const colInvAspectSums = activeCols.map(c => c.reduce((sum, p) => sum + 1.0 / p.aspectRatio, 0));
+    const relWidths = colInvAspectSums.map(s => (s > 0 ? 1.0 / s : 1.0));
+    const totalRelW = relWidths.reduce((sum, w) => sum + w, 0);
+
+    const blockW = canvasWidth;
+    const blockH = canvasHeight;
+    const placements: Placement[] = [];
+    let curX = 0;
+
+    for (let c = 0; c < activeCols.length; c++) {
+      const col = activeCols[c];
+      const colInvSum = colInvAspectSums[c];
+      const nextX = (c === activeCols.length - 1)
+        ? blockW
+        : Math.round(blockW * (relWidths.slice(0, c + 1).reduce((a, b) => a + b, 0) / totalRelW));
+      const cw = Math.max(1, nextX - curX);
+
+      let curY = 0;
+      let cumInvAspect = 0;
+
+      for (let pIdx = 0; pIdx < col.length; pIdx++) {
+        const p = col[pIdx];
+        cumInvAspect += 1.0 / p.aspectRatio;
+        const nextY = (pIdx === col.length - 1)
+          ? blockH
+          : Math.round(blockH * (cumInvAspect / colInvSum));
+        const ph = Math.max(1, nextY - curY);
+        const pad = spacing > 0 ? spacing / 2 : 0;
+
+        placements.push({
+          photoId: p.id,
+          x: Math.round(curX + pad),
+          y: Math.round(curY + pad),
+          width: Math.max(1, Math.round(cw - spacing)),
+          height: Math.max(1, Math.round(ph - spacing)),
+          aspectRatio: p.aspectRatio,
+        });
+        curY = nextY;
+      }
+      curX = nextX;
+    }
+    return placements;
+  }
+
   const sortedPhotos = [...photos].sort((a, b) => a.aspectRatio - b.aspectRatio);
   const shuffledPhotos = rng.shuffle(photos);
 
+  let bestConfig: { type: 'rows'; rows: Photo[][] } | { type: 'cols'; cols: Photo[][] } | null = null;
+  let bestScore = -Infinity;
+
   // 1. Search across Row counts R (Horizontal Slicing)
   const R_ideal = Math.max(1, Math.min(N, Math.round(Math.sqrt(N * (canvasHeight / canvasWidth)))));
-  const minR = Math.max(1, R_ideal - 3);
-  const maxR = Math.min(Math.max(1, Math.floor(N / 2)), R_ideal + 3);
+  const minR = Math.max(1, R_ideal - 2);
+  const maxR = Math.min(Math.max(1, Math.floor(N / 2)), R_ideal + 2);
 
   for (let R = minR; R <= maxR; R++) {
-    // Strategy A: Shuffled photo allocation to rows (try multiple random shuffles)
-    const numShufTrials = 3;
-    for (let trial = 0; trial < numShufTrials; trial++) {
-      const trialShuffled = trial === 0 ? shuffledPhotos : rng.shuffle(photos);
-      const rowsShuffled: Photo[][] = Array.from({ length: R }, () => []);
-      for (let i = 0; i < N; i++) {
-        rowsShuffled[i % R].push(trialShuffled[i]);
-      }
-      const optRowsShuf = optimizeRows(rowsShuffled);
-      const evalShuf = evaluateRows(optRowsShuf);
-      if (evalShuf) {
-        const randBonus = rng.next() * 200; // Random shuffle preference bonus for visual variety across seeds
-        const score = evalShuf.isCompliant
-          ? 20000 + randBonus + evalShuf.cov * 1000 - Math.max(Math.abs(evalShuf.minSF - 1.0), Math.abs(evalShuf.maxSF - 1.0)) * 100
-          : evalShuf.cov * 100 - (evalShuf.minSF < 0.70 ? (0.70 - evalShuf.minSF) * 500 : 0) - (evalShuf.maxSF > 1.30 ? (evalShuf.maxSF - 1.30) * 500 : 0);
-        if (score > bestScore) {
-          bestScore = score;
-          bestPlacements = evalShuf.placements;
-          bestCoverage = evalShuf.cov;
-        }
-      }
-    }
-
-    // Strategy B: Chunks of sorted photos
-    const rows1: Photo[][] = Array.from({ length: R }, () => []);
-    for (let i = 0; i < N; i++) {
-      const rowIdx = Math.min(R - 1, Math.floor((i * R) / N));
-      rows1[rowIdx].push(sortedPhotos[i]);
-    }
-    const optRows1 = optimizeRows(rows1);
-    const eval1 = evaluateRows(optRows1);
-    if (eval1) {
-      const score = eval1.isCompliant
-        ? 10000 + eval1.cov * 1000 - Math.max(Math.abs(eval1.minSF - 1.0), Math.abs(eval1.maxSF - 1.0)) * 200
-        : eval1.cov * 100 - (eval1.minSF < 0.70 ? (0.70 - eval1.minSF) * 500 : 0) - (eval1.maxSF > 1.30 ? (eval1.maxSF - 1.30) * 500 : 0);
+    // Strategy A: Shuffled allocation
+    const rowsShuffled: Photo[][] = Array.from({ length: R }, () => []);
+    for (let i = 0; i < N; i++) rowsShuffled[i % R].push(shuffledPhotos[i]);
+    const optRowsShuf = optimizeRows(rowsShuffled);
+    const evalShuf = fastEvalRows(optRowsShuf);
+    if (evalShuf) {
+      const randBonus = rng.next() * 200;
+      const score = evalShuf.isCompliant
+        ? 20000 + randBonus + evalShuf.cov * 1000 - Math.max(Math.abs(evalShuf.minSF - 1.0), Math.abs(evalShuf.maxSF - 1.0)) * 100
+        : evalShuf.cov * 100 - (evalShuf.minSF < 0.70 ? (0.70 - evalShuf.minSF) * 500 : 0) - (evalShuf.maxSF > 1.30 ? (evalShuf.maxSF - 1.30) * 500 : 0);
       if (score > bestScore) {
         bestScore = score;
-        bestPlacements = eval1.placements;
-        bestCoverage = eval1.cov;
+        bestConfig = { type: 'rows', rows: optRowsShuf };
+        if (evalShuf.isCompliant && score > 20150) break;
       }
     }
 
-    // Strategy C: Square-root aspect capacity weighting
-    const invSqrtAspects = sortedPhotos.map(p => 1 / Math.sqrt(p.aspectRatio));
-    const totalInvSqrt = invSqrtAspects.reduce((a, b) => a + b, 0);
-    const targetPerR = totalInvSqrt / R;
-
-    const rows2: Photo[][] = Array.from({ length: R }, () => []);
-    let curR = 0;
-    let accInvSqrt = 0;
-    for (let i = 0; i < N; i++) {
-      const p = sortedPhotos[i];
-      const remainingP = N - i;
-      const remainingR = R - curR;
-      if (remainingP === remainingR) {
-        if (rows2[curR].length > 0 && curR < R - 1) {
-          curR++;
-          accInvSqrt = 0;
-        }
-      } else if (curR < R - 1 && accInvSqrt + invSqrtAspects[i] / 2 >= targetPerR && rows2[curR].length >= 1) {
-        curR++;
-        accInvSqrt = 0;
-      }
-      rows2[curR].push(p);
-      accInvSqrt += invSqrtAspects[i];
-    }
-    const optRows2 = optimizeRows(rows2);
-    const eval2 = evaluateRows(optRows2);
-    if (eval2) {
-      const score = eval2.isCompliant
-        ? 10000 + eval2.cov * 1000 - Math.max(Math.abs(eval2.minSF - 1.0), Math.abs(eval2.maxSF - 1.0)) * 200
-        : eval2.cov * 100 - (eval2.minSF < 0.70 ? (0.70 - eval2.minSF) * 500 : 0) - (eval2.maxSF > 1.30 ? (eval2.maxSF - 1.30) * 500 : 0);
+    // Strategy B: Sorted chunks
+    const rowsSorted: Photo[][] = Array.from({ length: R }, () => []);
+    for (let i = 0; i < N; i++) rowsSorted[Math.min(R - 1, Math.floor((i * R) / N))].push(sortedPhotos[i]);
+    const optRowsSorted = optimizeRows(rowsSorted);
+    const evalSorted = fastEvalRows(optRowsSorted);
+    if (evalSorted) {
+      const score = evalSorted.isCompliant
+        ? 10000 + evalSorted.cov * 1000 - Math.max(Math.abs(evalSorted.minSF - 1.0), Math.abs(evalSorted.maxSF - 1.0)) * 200
+        : evalSorted.cov * 100 - (evalSorted.minSF < 0.70 ? (0.70 - evalSorted.minSF) * 500 : 0) - (evalSorted.maxSF > 1.30 ? (evalSorted.maxSF - 1.30) * 500 : 0);
       if (score > bestScore) {
         bestScore = score;
-        bestPlacements = eval2.placements;
-        bestCoverage = eval2.cov;
+        bestConfig = { type: 'rows', rows: optRowsSorted };
       }
     }
   }
 
   // 2. Search across Column counts C (Vertical Slicing)
   const C_ideal = Math.max(1, Math.min(N, Math.round(Math.sqrt(N * (canvasWidth / canvasHeight)))));
-  const minC = Math.max(1, C_ideal - 3);
-  const maxC = Math.min(Math.max(1, Math.floor(N / 2)), C_ideal + 3);
-
-  const sortedDesc = [...photos].sort((a, b) => b.aspectRatio - a.aspectRatio);
+  const minC = Math.max(1, C_ideal - 2);
+  const maxC = Math.min(Math.max(1, Math.floor(N / 2)), C_ideal + 2);
 
   for (let C = minC; C <= maxC; C++) {
-    // Strategy A: Shuffled photo allocation to cols (try multiple random shuffles)
-    const numColShufTrials = 3;
-    for (let trial = 0; trial < numColShufTrials; trial++) {
-      const trialShuffled = trial === 0 ? shuffledPhotos : rng.shuffle(photos);
-      const colsShuf: Photo[][] = Array.from({ length: C }, () => []);
-      for (let i = 0; i < N; i++) {
-        colsShuf[i % C].push(trialShuffled[i]);
-      }
-      const optColsShuf = optimizeCols(colsShuf);
-      const evalShuf = evaluateCols(optColsShuf);
-      if (evalShuf) {
-        const randBonus = rng.next() * 200; // Random shuffle preference bonus for visual variety across seeds
-        const score = evalShuf.isCompliant
-          ? 20000 + randBonus + evalShuf.cov * 1000 - Math.max(Math.abs(evalShuf.minSF - 1.0), Math.abs(evalShuf.maxSF - 1.0)) * 100
-          : evalShuf.cov * 100 - (evalShuf.minSF < 0.70 ? (0.70 - evalShuf.minSF) * 500 : 0) - (evalShuf.maxSF > 1.30 ? (evalShuf.maxSF - 1.30) * 500 : 0);
-        if (score > bestScore) {
-          bestScore = score;
-          bestPlacements = evalShuf.placements;
-          bestCoverage = evalShuf.cov;
-        }
-      }
-    }
-
-    // Strategy B: Chunks of sorted photos
-    const cols1: Photo[][] = Array.from({ length: C }, () => []);
-    for (let i = 0; i < N; i++) {
-      const colIdx = Math.min(C - 1, Math.floor((i * C) / N));
-      cols1[colIdx].push(sortedDesc[i]);
-    }
-    const optCols1 = optimizeCols(cols1);
-    const evalCol1 = evaluateCols(optCols1);
-    if (evalCol1) {
-      const score = evalCol1.isCompliant
-        ? 10000 + evalCol1.cov * 1000 - Math.max(Math.abs(evalCol1.minSF - 1.0), Math.abs(evalCol1.maxSF - 1.0)) * 200
-        : evalCol1.cov * 100 - (evalCol1.minSF < 0.70 ? (0.70 - evalCol1.minSF) * 500 : 0) - (evalCol1.maxSF > 1.30 ? (evalCol1.maxSF - 1.30) * 500 : 0);
+    const colsShuf: Photo[][] = Array.from({ length: C }, () => []);
+    for (let i = 0; i < N; i++) colsShuf[i % C].push(shuffledPhotos[i]);
+    const optColsShuf = optimizeCols(colsShuf);
+    const evalShuf = fastEvalCols(optColsShuf);
+    if (evalShuf) {
+      const randBonus = rng.next() * 200;
+      const score = evalShuf.isCompliant
+        ? 20000 + randBonus + evalShuf.cov * 1000 - Math.max(Math.abs(evalShuf.minSF - 1.0), Math.abs(evalShuf.maxSF - 1.0)) * 100
+        : evalShuf.cov * 100 - (evalShuf.minSF < 0.70 ? (0.70 - evalShuf.minSF) * 500 : 0) - (evalShuf.maxSF > 1.30 ? (evalShuf.maxSF - 1.30) * 500 : 0);
       if (score > bestScore) {
         bestScore = score;
-        bestPlacements = evalCol1.placements;
-        bestCoverage = evalCol1.cov;
+        bestConfig = { type: 'cols', cols: optColsShuf };
       }
     }
   }
 
-  if (bestPlacements && bestPlacements.length === N) {
-    return bestPlacements;
+  if (bestConfig) {
+    return bestConfig.type === 'rows'
+      ? buildFinalRowPlacements(bestConfig.rows)
+      : buildFinalColPlacements(bestConfig.cols);
   }
 
-  // Guaranteed fallback
+  // Fallback row layout
   const fallbackRows: Photo[][] = Array.from({ length: R_ideal }, () => []);
-  for (let i = 0; i < N; i++) {
-    fallbackRows[i % R_ideal].push(shuffledPhotos[i]);
-  }
-  const fallbackEval = evaluateRows(fallbackRows);
-  return fallbackEval ? fallbackEval.placements : [];
+  for (let i = 0; i < N; i++) fallbackRows[i % R_ideal].push(shuffledPhotos[i]);
+  return buildFinalRowPlacements(fallbackRows);
 }
 
 /**
